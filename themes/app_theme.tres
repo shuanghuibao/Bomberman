@@ -1,0 +1,71 @@
+[gd_resource type="Theme" load_steps=6 format=3]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+bg_color = Color(0.12, 0.13, 0.18, 0.94)
+border_color = Color(0.32, 0.36, 0.44, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+corner_radius_top_left = 14
+corner_radius_top_right = 14
+corner_radius_bottom_right = 14
+corner_radius_bottom_left = 14
+content_margin_left = 24
+content_margin_top = 20
+content_margin_right = 24
+content_margin_bottom = 20
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_norm"]
+bg_color = Color(0.25, 0.52, 0.9, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 18
+content_margin_top = 10
+content_margin_right = 18
+content_margin_bottom = 10
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_hov"]
+bg_color = Color(0.32, 0.62, 1, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 18
+content_margin_top = 10
+content_margin_right = 18
+content_margin_bottom = 10
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_press"]
+bg_color = Color(0.18, 0.38, 0.72, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 18
+content_margin_top = 10
+content_margin_right = 18
+content_margin_bottom = 10
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_sec"]
+bg_color = Color(0.2, 0.21, 0.27, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 18
+content_margin_top = 10
+content_margin_right = 18
+content_margin_bottom = 10
+
+[resource]
+PanelContainer/styles/panel = SubResource("StyleBoxFlat_panel")
+Button/styles/normal = SubResource("StyleBoxFlat_btn_norm")
+Button/styles/hover = SubResource("StyleBoxFlat_btn_hov")
+Button/styles/pressed = SubResource("StyleBoxFlat_btn_press")
+Button/colors/font_color = Color(0.96, 0.98, 1, 1)
+Button/colors/font_hover_color = Color(1, 1, 1, 1)
+Button/colors/font_pressed_color = Color(0.9, 0.92, 0.95, 1)
+Label/colors/font_color = Color(0.9, 0.92, 0.96, 1)

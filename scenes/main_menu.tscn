@@ -1,0 +1,110 @@
+[gd_scene load_steps=3 format=3 uid="uid://bomber_main_menu"]
+
+[ext_resource type="Theme" path="res://themes/app_theme.tres" id="1_theme"]
+[ext_resource type="Script" path="res://scripts/main_menu.gd" id="2_script"]
+
+[node name="MainMenu" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("1_theme")
+script = ExtResource("2_script")
+
+[node name="Backdrop" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.055, 0.062, 0.082, 1)
+
+[node name="Dim" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 0.22)
+
+[node name="Center" type="CenterContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Card" type="PanelContainer" parent="Center"]
+custom_minimum_size = Vector2(440, 380)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="Center/Card"]
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 6
+
+[node name="VBox" type="VBoxContainer" parent="Center/Card/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="Center/Card/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+theme_override_colors/font_color = Color(0.95, 0.97, 1, 1)
+text = "泡泡堂派对"
+horizontal_alignment = 1
+
+[node name="Subtitle" type="Label" parent="Center/Card/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+theme_override_colors/font_color = Color(0.62, 0.68, 0.76, 1)
+text = "本地双人 · 面向 Steam 的桌面原型"
+horizontal_alignment = 1
+
+[node name="Spacer" type="Control" parent="Center/Card/Margin/VBox"]
+custom_minimum_size = Vector2(0, 6)
+layout_mode = 2
+
+[node name="BtnLocal" type="Button" parent="Center/Card/Margin/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 48)
+layout_mode = 2
+text = "本地双人对战"
+
+[node name="BtnQuit" type="Button" parent="Center/Card/Margin/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 44)
+layout_mode = 2
+text = "退出游戏"
+
+[node name="Hint" type="Label" parent="Center/Card/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.5, 0.54, 0.58, 1)
+text = "对局内：Esc 暂停  ·  R 重开本局"
+horizontal_alignment = 1
+
+[node name="Footer" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -260.0
+offset_top = -38.0
+offset_right = 260.0
+offset_bottom = -10.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.42, 0.45, 0.5, 1)
+text = "Godot 4 · 官方 Control / Theme / StyleBoxFlat（无外部美术）"
+horizontal_alignment = 1
