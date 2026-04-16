@@ -39,6 +39,10 @@ func run() -> void:
 	test_remote_detonate()
 	test_pickup_kick()
 	test_pickup_remote()
+	test_pickup_shield()
+	test_pickup_slow_curse()
+	test_shield_absorbs_explosion()
+	test_slow_curse_wears_off()
 	test_map_template()
 	print("  done.\n")
 
@@ -374,6 +378,47 @@ func test_pickup_remote() -> void:
 	gl.try_collect_pickup(gl.p1)
 	T.assert_true(gl.p1.has_remote, "remote acquired")
 	T.assert_eq(gl.pickups.size(), 0, "consumed")
+
+
+func test_pickup_shield() -> void:
+	T.begin("pickup_shield")
+	var gl := _make()
+	gl.pickups.append(GameLogic.PickupData.new(1, 1, GameLogic.Pickup.SHIELD))
+	gl.try_collect_pickup(gl.p1)
+	T.assert_eq(gl.p1.shield, 1, "shield acquired")
+	T.assert_eq(gl.pickups.size(), 0, "consumed")
+
+
+func test_pickup_slow_curse() -> void:
+	T.begin("pickup_slow_curse")
+	var gl := _make()
+	var base_spd := gl.p1.move_speed()
+	gl.pickups.append(GameLogic.PickupData.new(1, 1, GameLogic.Pickup.SLOW_CURSE))
+	gl.try_collect_pickup(gl.p1)
+	T.assert_true(gl.p1.slow_timer > 0.0, "slow applied")
+	T.assert_true(gl.p1.move_speed() < base_spd, "speed reduced")
+
+
+func test_shield_absorbs_explosion() -> void:
+	T.begin("shield_absorbs_explosion")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.p1.shield = 1
+	gl.try_place_bomb(gl.p1)
+	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
+	T.assert_true(gl.p1.alive, "survived thanks to shield")
+	T.assert_eq(gl.p1.shield, 0, "shield consumed")
+
+
+func test_slow_curse_wears_off() -> void:
+	T.begin("slow_curse_wears_off")
+	var gl := _make()
+	gl.p1.slow_timer = 1.0
+	var slow_spd := gl.p1.move_speed()
+	for i in range(70):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+	T.assert_true(gl.p1.slow_timer <= 0.0, "slow expired")
+	T.assert_true(gl.p1.move_speed() > slow_spd, "speed restored")
 
 
 # ── 地图模板 ─────────────────────────────

@@ -57,6 +57,16 @@ func play_detonate() -> void:
 	_play_tone(520.0, 0.04, -6.0)
 
 
+func play_shield_break() -> void:
+	_play_tone(880.0, 0.04, -8.0)
+	await get_tree().create_timer(0.04).timeout
+	_play_tone(660.0, 0.06, -8.0)
+
+
+func play_curse() -> void:
+	_play_tone(180.0, 0.15, -7.0)
+
+
 func _play_tone(freq: float, dur: float, vol_db: float) -> void:
 	var sample_rate := 22050
 	var frames := int(dur * sample_rate)

@@ -13,6 +13,8 @@ const CLR_PICKUP_FIRE := Color(1.0, 0.42, 0.22)
 const CLR_PICKUP_SPEED := Color(0.25, 0.88, 0.42)
 const CLR_PICKUP_KICK := Color(0.95, 0.82, 0.18)
 const CLR_PICKUP_REMOTE := Color(0.72, 0.38, 0.95)
+const CLR_PICKUP_SHIELD := Color(0.20, 0.85, 0.85)
+const CLR_PICKUP_CURSE := Color(0.75, 0.18, 0.22)
 
 const NPC_COLORS: Array[Color] = [
 	Color(1.0, 0.52, 0.38),
@@ -240,7 +242,7 @@ func _damage_npc_players() -> void:
 		for e in logic.explosions:
 			var ex: GameLogic.ExplData = e
 			if ex.gx == gx and ex.gy == gy:
-				p.alive = false
+				logic.try_kill_player(p)
 				break
 
 
@@ -253,12 +255,21 @@ func _handle_events() -> void:
 			GameLogic.Event.EXPLOSION:
 				_sfx.play_explosion()
 			GameLogic.Event.PICKUP_COLLECTED:
-				_sfx.play_pickup()
+				var pk: int = e.data.get("kind", 0)
+				if pk == GameLogic.Pickup.SLOW_CURSE:
+					_sfx.play_curse()
+				else:
+					_sfx.play_pickup()
 				_spawn_pickup_toast(e.data)
 			GameLogic.Event.BOMB_KICKED:
 				_sfx.play_kick()
 			GameLogic.Event.REMOTE_DETONATE:
 				_sfx.play_detonate()
+			GameLogic.Event.SHIELD_BREAK:
+				_sfx.play_shield_break()
+				var sw := "P1" if e.data.get("pid", 0) == 0 else ("NPC" if e.data.get("pid", 0) >= 10 else "P2")
+				_toasts.append(ToastItem.new("%s 的护盾抵挡了一次爆炸！" % sw, CLR_PICKUP_SHIELD, TOAST_TTL))
+				_sync_toast_ui()
 			GameLogic.Event.PHASE_END:
 				_show_result()
 				var p: int = e.data.get("phase", 0)
@@ -290,6 +301,12 @@ func _spawn_pickup_toast(data: Dictionary) -> void:
 		GameLogic.Pickup.REMOTE:
 			desc = "%s 获得 遥控引爆（满雷后再按引爆）" % who
 			col = CLR_PICKUP_REMOTE
+		GameLogic.Pickup.SHIELD:
+			desc = "%s 获得 护盾（抵挡一次爆炸）" % who
+			col = CLR_PICKUP_SHIELD
+		GameLogic.Pickup.SLOW_CURSE:
+			desc = "%s 触发 减速诅咒！（3秒内变慢）" % who
+			col = CLR_PICKUP_CURSE
 	_toasts.append(ToastItem.new(desc, col, TOAST_TTL))
 	_sync_toast_ui()
 
@@ -365,25 +382,25 @@ func _norm_dir(x: int, y: int) -> Vector2i:
 
 func _refresh_ui() -> void:
 	if is_vs_npc:
-		var extras := ""
-		if logic.p1.has_kick: extras += " 踢"
-		if logic.p1.has_remote: extras += " 遥控"
-		var p1s := "你 炸弹%d 火力%d 速度%d%s" % [logic.p1.max_bombs, logic.p1.range_i, logic.p1.speed_ups, extras]
+		var p1s := "你 %s" % _player_stat_str(logic.p1)
 		_lbl_hint.text = "%s  |  WASD/空格  R重开  Esc暂停" % p1s
 	else:
-		var e1 := ""
-		if logic.p1.has_kick: e1 += " 踢"
-		if logic.p1.has_remote: e1 += " 遥控"
-		var e2 := ""
-		if logic.p2.has_kick: e2 += " 踢"
-		if logic.p2.has_remote: e2 += " 遥控"
-		var p1s := "P1 炸弹%d 火力%d 速度%d%s" % [logic.p1.max_bombs, logic.p1.range_i, logic.p1.speed_ups, e1]
-		var p2s := "P2 炸弹%d 火力%d 速度%d%s" % [logic.p2.max_bombs, logic.p2.range_i, logic.p2.speed_ups, e2]
+		var p1s := "P1 %s" % _player_stat_str(logic.p1)
+		var p2s := "P2 %s" % _player_stat_str(logic.p2)
 		_lbl_hint.text = "%s  |  %s  |  WASD/空格  方向键/回车  R重开  Esc暂停" % [p1s, p2s]
 	if logic.phase == GameLogic.Phase.PLAYING:
 		_lbl_phase.text = "对局进行中" if not match_paused else "已暂停"
 	else:
 		_lbl_phase.text = "本局结束"
+
+
+func _player_stat_str(pl: GameLogic.PlayerData) -> String:
+	var s := "炸弹%d 火力%d 速度%d" % [pl.max_bombs, pl.range_i, pl.speed_ups]
+	if pl.has_kick: s += " 踢"
+	if pl.has_remote: s += " 遥控"
+	if pl.shield > 0: s += " 盾x%d" % pl.shield
+	if pl.slow_timer > 0.0: s += " 慢%.1fs" % pl.slow_timer
+	return s
 
 
 func _go_main_menu() -> void:
@@ -467,6 +484,8 @@ func _draw_pickup(pd: GameLogic.PickupData, o: Vector2, ts: float) -> void:
 		GameLogic.Pickup.SPEED_UP: col = CLR_PICKUP_SPEED
 		GameLogic.Pickup.KICK: col = CLR_PICKUP_KICK
 		GameLogic.Pickup.REMOTE: col = CLR_PICKUP_REMOTE
+		GameLogic.Pickup.SHIELD: col = CLR_PICKUP_SHIELD
+		GameLogic.Pickup.SLOW_CURSE: col = CLR_PICKUP_CURSE
 		_: col = Color.WHITE
 	var bg := col.darkened(0.55)
 	draw_rect(Rect2(o.x + pd.gx * ts + m - 2.0, o.y + pd.gy * ts + m - 2.0,
@@ -491,6 +510,13 @@ func _draw_pickup(pd: GameLogic.PickupData, o: Vector2, ts: float) -> void:
 			draw_rect(Rect2(cx - dot * 2.0, cy - dot * 2.0, dot * 4.0, dot * 4.0), Color.WHITE)
 			draw_rect(Rect2(cx - dot, cy - dot, dot * 2.0, dot * 2.0), col.darkened(0.3))
 			draw_rect(Rect2(cx - dot * 0.5, cy - dot * 0.5, dot, dot), Color.WHITE)
+		GameLogic.Pickup.SHIELD:
+			draw_rect(Rect2(cx - dot * 2.0, cy - dot * 2.5, dot * 4.0, dot * 2.0), Color.WHITE)
+			draw_rect(Rect2(cx - dot, cy - dot * 0.5, dot * 2.0, dot * 3.0), Color.WHITE)
+		GameLogic.Pickup.SLOW_CURSE:
+			draw_rect(Rect2(cx - dot * 2.0, cy - dot * 2.0, dot * 4.0, dot), Color.WHITE)
+			draw_rect(Rect2(cx - dot * 2.0, cy + dot, dot * 4.0, dot), Color.WHITE)
+			draw_rect(Rect2(cx - dot * 0.5, cy - dot * 2.0, dot, dot * 4.0), Color.WHITE)
 
 
 func _draw_player(pl: GameLogic.PlayerData, col: Color) -> void:
@@ -499,9 +525,17 @@ func _draw_player(pl: GameLogic.PlayerData, col: Color) -> void:
 	var o := origin
 	var ts := tile_size
 	var m := ts * 0.2
+	var draw_col := col.darkened(0.35) if pl.slow_timer > 0.0 else col
+	if pl.shield > 0:
+		var s := ts * 0.12
+		draw_rect(
+			Rect2(o.x + pl.gx * ts + m - s, o.y + pl.gy * ts + m - s,
+				ts - (m - s) * 2.0, ts - (m - s) * 2.0),
+			CLR_PICKUP_SHIELD.lerp(Color.WHITE, 0.3)
+		)
 	draw_rect(
 		Rect2(o.x + pl.gx * ts + m, o.y + pl.gy * ts + m, ts - m * 2.0, ts - m * 2.0),
-		col
+		draw_col
 	)
 	draw_rect(
 		Rect2(o.x + pl.gx * ts + m, o.y + pl.gy * ts + ts - m - 4.0, ts - m * 2.0, 4.0),

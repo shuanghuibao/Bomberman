@@ -12,10 +12,12 @@ const BOMB_FUSE := 2.4
 const EXPLOSION_TTL := 0.45
 const DROP_CHANCE := 0.55
 const BOMB_SLIDE_INTERVAL := 0.06
+const SLOW_DURATION := 3.0
+const SLOW_FACTOR := 0.45
 
 enum Cell { EMPTY, WALL, CRATE }
 enum Phase { PLAYING, P1_WIN, P2_WIN, DRAW }
-enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE }
+enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE, SHIELD, SLOW_CURSE }
 
 
 class PlayerData:
@@ -28,6 +30,8 @@ class PlayerData:
 	var speed_ups: int = 0
 	var has_kick: bool = false
 	var has_remote: bool = false
+	var shield: int = 0
+	var slow_timer: float = 0.0
 	var last_bomb: Vector2i = Vector2i(999999, 999999)
 	var moving: bool = false
 	var target_gx: float = 0.0
@@ -51,11 +55,16 @@ class PlayerData:
 		speed_ups = 0
 		has_kick = false
 		has_remote = false
+		shield = 0
+		slow_timer = 0.0
 		last_bomb = Vector2i(999999, 999999)
 		moving = false
 
 	func move_speed() -> float:
-		return minf(GameLogic.BASE_SPEED + speed_ups * GameLogic.SPEED_PER_SHOE, GameLogic.MAX_SPEED)
+		var spd := minf(GameLogic.BASE_SPEED + speed_ups * GameLogic.SPEED_PER_SHOE, GameLogic.MAX_SPEED)
+		if slow_timer > 0.0:
+			spd *= GameLogic.SLOW_FACTOR
+		return spd
 
 	func aligned() -> bool:
 		return (not moving) \
@@ -112,7 +121,7 @@ class PickupData:
 
 # ── 每帧事件队列（view 层读取后清空，避免 signal 依赖）──
 
-enum Event { BOMB_PLACED, EXPLOSION, PICKUP_COLLECTED, PHASE_END, BOMB_KICKED, REMOTE_DETONATE }
+enum Event { BOMB_PLACED, EXPLOSION, PICKUP_COLLECTED, PHASE_END, BOMB_KICKED, REMOTE_DETONATE, SHIELD_BREAK }
 
 class GameEvent:
 	var type: int
@@ -294,6 +303,8 @@ func try_start_move(pl: PlayerData, dx: int, dy: int) -> bool:
 func player_move_tick(pl: PlayerData, dt: float) -> void:
 	if not pl.alive:
 		return
+	if pl.slow_timer > 0.0:
+		pl.slow_timer = maxf(pl.slow_timer - dt, 0.0)
 	if pl.moving:
 		var dx := pl.target_gx - pl.gx
 		var dy := pl.target_gy - pl.gy
@@ -497,9 +508,19 @@ func _blast_cell(x: int, y: int, q: Array) -> bool:
 
 func _damage_at(x: int, y: int) -> void:
 	if p1.alive and int(roundf(p1.gx)) == x and int(roundf(p1.gy)) == y:
-		p1.alive = false
+		try_kill_player(p1)
 	if p2.alive and int(roundf(p2.gx)) == x and int(roundf(p2.gy)) == y:
-		p2.alive = false
+		try_kill_player(p2)
+
+
+func try_kill_player(pl: PlayerData) -> void:
+	if not pl.alive:
+		return
+	if pl.shield > 0:
+		pl.shield -= 1
+		events.append(GameEvent.new(Event.SHIELD_BREAK, {"pid": pl.pid}))
+		return
+	pl.alive = false
 
 
 # ── 爆炸 ─────────────────────────────────
@@ -519,16 +540,20 @@ func _maybe_drop_pickup(x: int, y: int) -> void:
 		return
 	var roll := rng.randf()
 	var kind: int
-	if roll < 0.28:
+	if roll < 0.22:
 		kind = Pickup.BOMB_UP
-	elif roll < 0.52:
+	elif roll < 0.42:
 		kind = Pickup.FIRE_UP
-	elif roll < 0.72:
+	elif roll < 0.58:
 		kind = Pickup.SPEED_UP
-	elif roll < 0.86:
+	elif roll < 0.70:
 		kind = Pickup.KICK
-	else:
+	elif roll < 0.80:
 		kind = Pickup.REMOTE
+	elif roll < 0.90:
+		kind = Pickup.SHIELD
+	else:
+		kind = Pickup.SLOW_CURSE
 	pickups.append(PickupData.new(x, y, kind))
 
 
@@ -557,6 +582,10 @@ func try_collect_pickup(pl: PlayerData) -> void:
 			pl.has_kick = true
 		Pickup.REMOTE:
 			pl.has_remote = true
+		Pickup.SHIELD:
+			pl.shield = mini(pl.shield + 1, 2)
+		Pickup.SLOW_CURSE:
+			pl.slow_timer = SLOW_DURATION
 	events.append(GameEvent.new(Event.PICKUP_COLLECTED, {"pid": pl.pid, "kind": pd.kind}))
 	pickups.erase(pd)
 
