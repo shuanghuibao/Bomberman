@@ -3,8 +3,8 @@ extends RefCounted
 
 ## 纯游戏状态 + 规则，零 Node / 零 UI 依赖，方便单元测试。
 
-const COLS := 15
-const ROWS := 11
+const DEFAULT_COLS := 15
+const DEFAULT_ROWS := 11
 const BASE_SPEED := 5.0
 const MAX_SPEED := 9.5
 const SPEED_PER_SHOE := 1.2
@@ -15,12 +15,15 @@ const BOMB_SLIDE_INTERVAL := 0.06
 const SLOW_DURATION := 3.0
 const SLOW_FACTOR := 0.45
 const MUD_FACTOR := 0.5
+const SNOW_FACTOR := 0.6
+const SAND_FACTOR := 0.7
+const LAVA_DAMAGE_TIME := 0.8
 const PORTAL_COOLDOWN := 0.5
 const SHRINK_START := 30.0
 const SHRINK_INTERVAL := 8.0
 
-enum Cell { EMPTY, WALL, CRATE, IRON_CRATE, SHRINK_WALL }
-enum Floor { NORMAL, ICE, MUD }
+enum Cell { EMPTY, WALL, CRATE, IRON_CRATE, SHRINK_WALL, WATER }
+enum Floor { NORMAL, ICE, MUD, GRASS, SNOW, SAND, LAVA }
 enum Phase { PLAYING, P1_WIN, P2_WIN, DRAW }
 enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE, SHIELD, SLOW_CURSE }
 
@@ -43,6 +46,7 @@ class PlayerData:
 	var moving: bool = false
 	var target_gx: float = 0.0
 	var target_gy: float = 0.0
+	var lava_timer: float = 0.0
 
 	func _init(p_pid: int, sx: int, sy: int) -> void:
 		pid = p_pid
@@ -68,6 +72,7 @@ class PlayerData:
 		portal_cd = 0.0
 		last_bomb = Vector2i(999999, 999999)
 		moving = false
+		lava_timer = 0.0
 
 	func move_speed() -> float:
 		var spd := minf(GameLogic.BASE_SPEED + speed_ups * GameLogic.SPEED_PER_SHOE, GameLogic.MAX_SPEED)
@@ -141,6 +146,8 @@ var events: Array = []
 
 # ── 公开状态 ──────────────────────────────
 
+var cols: int = DEFAULT_COLS
+var rows: int = DEFAULT_ROWS
 var rng := RandomNumberGenerator.new()
 var grid: Array = []
 var floor_grid: Array = []
@@ -164,11 +171,13 @@ func _init(seed_value: int = -1) -> void:
 	else:
 		rng.randomize()
 	p1 = PlayerData.new(0, 1, 1)
-	p2 = PlayerData.new(1, COLS - 2, ROWS - 2)
+	p2 = PlayerData.new(1, DEFAULT_COLS - 2, DEFAULT_ROWS - 2)
 
 
 func reset(map: Dictionary = {}) -> void:
 	_map = map
+	cols = int(_map.get("cols", DEFAULT_COLS))
+	rows = int(_map.get("rows", DEFAULT_ROWS))
 	phase = Phase.PLAYING
 	bombs.clear()
 	explosions.clear()
@@ -180,7 +189,7 @@ func reset(map: Dictionary = {}) -> void:
 	shrink_ring = 0
 	shrink_enabled = _map.get("shrink", false)
 	_build_grid()
-	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(COLS - 2, ROWS - 2)])
+	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(cols - 2, rows - 2)])
 	if spawns.size() >= 1:
 		p1.reset(spawns[0].x, spawns[0].y)
 	else:
@@ -188,7 +197,7 @@ func reset(map: Dictionary = {}) -> void:
 	if spawns.size() >= 2:
 		p2.reset(spawns[1].x, spawns[1].y)
 	else:
-		p2.reset(COLS - 2, ROWS - 2)
+		p2.reset(cols - 2, rows - 2)
 
 
 # ── 网格生成 ──────────────────────────────
@@ -196,17 +205,17 @@ func reset(map: Dictionary = {}) -> void:
 func _build_grid() -> void:
 	grid.clear()
 	floor_grid.clear()
-	for x in range(COLS):
+	for x in range(cols):
 		var col: Array = []
-		col.resize(ROWS)
+		col.resize(rows)
 		grid.append(col)
 		var fcol: Array = []
-		fcol.resize(ROWS)
+		fcol.resize(rows)
 		fcol.fill(Floor.NORMAL)
 		floor_grid.append(fcol)
 	var template: Array = _map.get("template", [])
 	var density: float = _map.get("crate_density", 0.52)
-	if template.size() == ROWS:
+	if template.size() == rows:
 		_build_from_template(template, density)
 	else:
 		_build_default_grid(density)
@@ -215,8 +224,8 @@ func _build_grid() -> void:
 
 func _build_from_template(template: Array, density: float) -> void:
 	var pending_portals: Array[Vector2i] = []
-	for x in range(COLS):
-		for y in range(ROWS):
+	for x in range(cols):
+		for y in range(rows):
 			var row: String = template[y]
 			var ch := row[x] if x < row.length() else "."
 			match ch:
@@ -234,13 +243,27 @@ func _build_from_template(template: Array, density: float) -> void:
 				"T":
 					grid[x][y] = Cell.EMPTY
 					pending_portals.append(Vector2i(x, y))
+				"W":
+					grid[x][y] = Cell.WATER
+				"G":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.GRASS
+				"S":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.SNOW
+				"A":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.SAND
+				"L":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.LAVA
 				_:
 					grid[x][y] = Cell.EMPTY
 	for i in range(0, pending_portals.size() - 1, 2):
 		portals.append([pending_portals[i], pending_portals[i + 1]])
 	var spawns: Array = _map.get("spawns", [])
-	for x in range(1, COLS - 1):
-		for y in range(1, ROWS - 1):
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
 			if grid[x][y] != Cell.EMPTY:
 				continue
 			if floor_grid[x][y] != Floor.NORMAL:
@@ -254,17 +277,17 @@ func _build_from_template(template: Array, density: float) -> void:
 
 
 func _build_default_grid(density: float) -> void:
-	for x in range(COLS):
-		for y in range(ROWS):
-			var border := x == 0 or y == 0 or x == COLS - 1 or y == ROWS - 1
+	for x in range(cols):
+		for y in range(rows):
+			var border := x == 0 or y == 0 or x == cols - 1 or y == rows - 1
 			if border:
 				grid[x][y] = Cell.WALL
-			elif (x + y) % 2 == 0 and x > 1 and x < COLS - 2 and y > 1 and y < ROWS - 2:
+			elif (x + y) % 2 == 0 and x > 1 and x < cols - 2 and y > 1 and y < rows - 2:
 				grid[x][y] = Cell.WALL
 			else:
 				grid[x][y] = Cell.EMPTY
-	for x in range(1, COLS - 1):
-		for y in range(1, ROWS - 1):
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
 			if grid[x][y] != Cell.EMPTY:
 				continue
 			if _is_spawn_zone(x, y):
@@ -274,8 +297,8 @@ func _build_default_grid(density: float) -> void:
 
 
 func _is_spawn_zone(x: int, y: int) -> bool:
-	return (x <= 2 and y <= 2) or (x >= COLS - 3 and y >= ROWS - 3) \
-		or (x >= COLS - 3 and y <= 2) or (x <= 2 and y >= ROWS - 3)
+	return (x <= 2 and y <= 2) or (x >= cols - 3 and y >= rows - 3) \
+		or (x >= cols - 3 and y <= 2) or (x <= 2 and y >= rows - 3)
 
 
 func _is_near_any_spawn(x: int, y: int, spawns: Array) -> bool:
@@ -297,13 +320,13 @@ func _is_portal_cell(x: int, y: int) -> bool:
 
 func _carve_reachable_crates() -> void:
 	var reach: Dictionary = {}
-	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(COLS - 2, ROWS - 2)])
+	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(cols - 2, rows - 2)])
 	for s in spawns:
 		var sp: Vector2i = s
-		if sp.x > 0 and sp.x < COLS and sp.y > 0 and sp.y < ROWS:
+		if sp.x > 0 and sp.x < cols and sp.y > 0 and sp.y < rows:
 			_bfs_reachable(sp.x, sp.y, reach)
-	for x in range(1, COLS - 1):
-		for y in range(1, ROWS - 1):
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
 			if grid[x][y] == Cell.CRATE and not reach.has(Vector2i(x, y)):
 				grid[x][y] = Cell.EMPTY
 
@@ -316,9 +339,9 @@ func _bfs_reachable(sx: int, sy: int, reach: Dictionary) -> void:
 		var c: Vector2i = q.pop_front()
 		for d: Vector2i in dirs:
 			var n := c + d
-			if n.x < 0 or n.y < 0 or n.x >= COLS or n.y >= ROWS:
+			if n.x < 0 or n.y < 0 or n.x >= cols or n.y >= rows:
 				continue
-			if grid[n.x][n.y] == Cell.WALL:
+			if grid[n.x][n.y] == Cell.WALL or grid[n.x][n.y] == Cell.WATER:
 				continue
 			if reach.has(n):
 				continue
@@ -328,7 +351,7 @@ func _bfs_reachable(sx: int, sy: int, reach: Dictionary) -> void:
 
 
 func floor_at(gx: int, gy: int) -> int:
-	if gx < 0 or gy < 0 or gx >= COLS or gy >= ROWS:
+	if gx < 0 or gy < 0 or gx >= cols or gy >= rows:
 		return Floor.NORMAL
 	return floor_grid[gx][gy]
 
@@ -385,8 +408,13 @@ func player_move_tick(pl: PlayerData, dt: float) -> void:
 		var spd := pl.move_speed()
 		var cur_gx := int(roundf(pl.gx))
 		var cur_gy := int(roundf(pl.gy))
-		if floor_at(cur_gx, cur_gy) == Floor.MUD:
+		var cur_floor := floor_at(cur_gx, cur_gy)
+		if cur_floor == Floor.MUD:
 			spd *= MUD_FACTOR
+		elif cur_floor == Floor.SNOW:
+			spd *= SNOW_FACTOR
+		elif cur_floor == Floor.SAND:
+			spd *= SAND_FACTOR
 		var step := spd * dt
 		if len <= 0.0001 or step >= len:
 			pl.gx = pl.target_gx
@@ -419,6 +447,12 @@ func player_move_tick(pl: PlayerData, dt: float) -> void:
 	var igy := int(roundf(pl.gy))
 	if bomb_at(igx, igy) == null:
 		pl.last_bomb = Vector2i(999999, 999999)
+	if pl.alive and floor_at(igx, igy) == Floor.LAVA:
+		pl.lava_timer += dt
+		if pl.lava_timer >= LAVA_DAMAGE_TIME:
+			try_kill_player(pl)
+	else:
+		pl.lava_timer = 0.0
 
 
 func update_player(pl: PlayerData, dir: Vector2i, want_bomb: bool, dt: float) -> void:
@@ -433,9 +467,10 @@ func update_player(pl: PlayerData, dir: Vector2i, want_bomb: bool, dt: float) ->
 
 
 func walkable_for(gx: int, gy: int, pl: PlayerData) -> bool:
-	if gx < 0 or gy < 0 or gx >= COLS or gy >= ROWS:
+	if gx < 0 or gy < 0 or gx >= cols or gy >= rows:
 		return false
-	if grid[gx][gy] != Cell.EMPTY:
+	var c: int = grid[gx][gy]
+	if c != Cell.EMPTY:
 		return false
 	var b: BombData = bomb_at(gx, gy)
 	if b != null:
@@ -525,7 +560,7 @@ func tick_moving_bombs(dt: float) -> void:
 
 
 func _bomb_slide_blocked(gx: int, gy: int) -> bool:
-	if gx < 0 or gy < 0 or gx >= COLS or gy >= ROWS:
+	if gx < 0 or gy < 0 or gx >= cols or gy >= rows:
 		return true
 	if grid[gx][gy] != Cell.EMPTY:
 		return true
@@ -575,10 +610,10 @@ func _spread_blast(ox: int, oy: int, dx: int, dy: int, range_i: int, q: Array) -
 	for i in range(1, range_i + 1):
 		var x := ox + dx * i
 		var y := oy + dy * i
-		if x < 0 or y < 0 or x >= COLS or y >= ROWS:
+		if x < 0 or y < 0 or x >= cols or y >= rows:
 			break
 		var c: int = grid[x][y]
-		if c == Cell.WALL or c == Cell.SHRINK_WALL:
+		if c == Cell.WALL or c == Cell.SHRINK_WALL or c == Cell.WATER:
 			break
 		var stop := _blast_cell(x, y, q)
 		if c == Cell.CRATE:
@@ -656,7 +691,7 @@ func tick_shrink(dt: float) -> void:
 	shrink_timer += dt
 	if shrink_timer < SHRINK_START:
 		return
-	var max_ring := mini(COLS, ROWS) / 2 - 1
+	var max_ring := mini(cols, rows) / 2 - 1
 	var target := mini(int((shrink_timer - SHRINK_START) / SHRINK_INTERVAL) + 1, max_ring)
 	while shrink_ring < target:
 		shrink_ring += 1
@@ -664,9 +699,9 @@ func tick_shrink(dt: float) -> void:
 
 
 func _apply_shrink_ring(ring: int) -> void:
-	for x in range(COLS):
-		for y in range(ROWS):
-			if x != ring and x != COLS - 1 - ring and y != ring and y != ROWS - 1 - ring:
+	for x in range(cols):
+		for y in range(rows):
+			if x != ring and x != cols - 1 - ring and y != ring and y != rows - 1 - ring:
 				continue
 			if grid[x][y] == Cell.WALL or grid[x][y] == Cell.SHRINK_WALL:
 				continue

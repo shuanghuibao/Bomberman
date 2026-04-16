@@ -32,6 +32,7 @@ var npcs: Array = []
 var npc_players: Array = []
 var _current_map: Dictionary = {}
 var _sprites: SpriteFactory
+var _theme: String = "classic"
 
 const PLAYER_SPRITE_KEYS: Array[String] = ["p1", "p2"]
 const NPC_SPRITE_KEYS: Array[String] = ["npc0", "npc1", "npc2"]
@@ -83,6 +84,7 @@ func _ready() -> void:
 	_current_map = all_maps[map_index] if map_index < all_maps.size() else {}
 
 	logic.reset(_current_map)
+	_theme = str(_current_map.get("theme", "classic"))
 	_setup_npc_players()
 
 	%BtnMenu.pressed.connect(_go_main_menu)
@@ -100,10 +102,13 @@ func _setup_npc_players() -> void:
 	npc_players.clear()
 	if not is_vs_npc:
 		return
-	var spawns: Array = _current_map.get("spawns", MapDefs.DEFAULT_SPAWNS)
+	var def_spawns := MapDefs._spawns_for(logic.cols, logic.rows)
+	var spawns: Array = _current_map.get("spawns", def_spawns)
 	for i in range(npc_count):
 		var spawn_idx := 2 + i
-		var spawn: Vector2i = spawns[spawn_idx] if spawn_idx < spawns.size() else Vector2i(13, 9)
+		var spawn: Vector2i = spawns[spawn_idx] if spawn_idx < spawns.size() else Vector2i(logic.cols - 2, logic.rows - 2)
+		if spawn.x <= 0 or spawn.y <= 0 or spawn.x >= logic.cols - 1 or spawn.y >= logic.rows - 1:
+			spawn = Vector2i(logic.cols - 2, 1)
 		if logic.grid[spawn.x][spawn.y] != GameLogic.Cell.EMPTY:
 			logic.grid[spawn.x][spawn.y] = GameLogic.Cell.EMPTY
 			logic.iron_hp.erase(spawn)
@@ -115,7 +120,7 @@ func _setup_npc_players() -> void:
 			for dy in range(-1, 2):
 				var cx := spawn.x + dx
 				var cy := spawn.y + dy
-				if cx > 0 and cy > 0 and cx < GameLogic.COLS - 1 and cy < GameLogic.ROWS - 1:
+				if cx > 0 and cy > 0 and cx < logic.cols - 1 and cy < logic.rows - 1:
 					var cell: int = logic.grid[cx][cy]
 					if cell == GameLogic.Cell.CRATE or cell == GameLogic.Cell.IRON_CRATE:
 						logic.grid[cx][cy] = GameLogic.Cell.EMPTY
@@ -126,10 +131,10 @@ func _recalc_origin() -> void:
 	var vs := get_viewport().get_visible_rect().size
 	var avail_w := vs.x - GRID_PADDING * 2.0
 	var avail_h := vs.y - HUD_H - GRID_PADDING * 2.0
-	tile_size = minf(avail_w / float(GameLogic.COLS), avail_h / float(GameLogic.ROWS))
+	tile_size = minf(avail_w / float(logic.cols), avail_h / float(logic.rows))
 	tile_size = maxf(tile_size, 16.0)
-	var wx := GameLogic.COLS * tile_size
-	var wy := GameLogic.ROWS * tile_size
+	var wx := logic.cols * tile_size
+	var wy := logic.rows * tile_size
 	origin = Vector2(
 		(vs.x - wx) * 0.5,
 		HUD_H + (vs.y - HUD_H - wy) * 0.5
@@ -139,6 +144,7 @@ func _recalc_origin() -> void:
 
 func _reset_match() -> void:
 	logic.reset(_current_map)
+	_theme = str(_current_map.get("theme", "classic"))
 	_setup_npc_players()
 	match_paused = false
 	_pause_layer.hide()
@@ -467,54 +473,73 @@ func _draw() -> void:
 	var o := origin
 	var ts := tile_size
 	var L := logic
+	var th := _theme
 
-	draw_rect(Rect2(o.x, o.y, GameLogic.COLS * ts, GameLogic.ROWS * ts), Color(0.09, 0.10, 0.13))
+	var ground_tex: ImageTexture = _sprites.get_tex("ground_" + th)
+	var wall_tex: ImageTexture = _sprites.get_tex("wall_" + th)
+	var crate_tex: ImageTexture = _sprites.get_tex("crate_" + th)
+	var iron_tex: ImageTexture = _sprites.get_tex("iron_" + th)
+	var shrink_tex: ImageTexture = _sprites.get_tex("shrink_" + th)
+	var water_tex: ImageTexture = _sprites.get_tex("tile_water")
+	var grass_tex: ImageTexture = _sprites.get_tex("tile_grass")
+	var snow_tex: ImageTexture = _sprites.get_tex("tile_snow")
+	var sand_tex: ImageTexture = _sprites.get_tex("tile_sand")
+	var lava_tex: ImageTexture = _sprites.get_tex("tile_lava")
+	var ice_tex: ImageTexture = _sprites.get_tex("tile_ice")
+	var mud_tex: ImageTexture = _sprites.get_tex("tile_mud")
 
-	for x in range(GameLogic.COLS):
-		for y in range(GameLogic.ROWS):
+	draw_rect(Rect2(o.x, o.y, logic.cols * ts, logic.rows * ts), Color(0.09, 0.10, 0.13))
+
+	for x in range(logic.cols):
+		for y in range(logic.rows):
+			var r := Rect2(o.x + x * ts, o.y + y * ts, ts, ts)
 			var c: int = L.grid[x][y]
-			var col: Color
-			if c == GameLogic.Cell.WALL:
-				col = Color(0.22, 0.24, 0.30)
+
+			if c == GameLogic.Cell.EMPTY:
+				var fl: int = L.floor_grid[x][y]
+				var ftex: ImageTexture = null
+				match fl:
+					GameLogic.Floor.ICE: ftex = ice_tex
+					GameLogic.Floor.MUD: ftex = mud_tex
+					GameLogic.Floor.GRASS: ftex = grass_tex
+					GameLogic.Floor.SNOW: ftex = snow_tex
+					GameLogic.Floor.SAND: ftex = sand_tex
+					GameLogic.Floor.LAVA: ftex = lava_tex
+					_: ftex = ground_tex
+				if ftex:
+					draw_texture_rect(ftex, r, false)
+				else:
+					draw_rect(r, Color(0.12, 0.13, 0.16))
+			elif c == GameLogic.Cell.WALL:
+				if wall_tex:
+					draw_texture_rect(wall_tex, r, false)
+				else:
+					draw_rect(r, Color(0.22, 0.24, 0.30))
 			elif c == GameLogic.Cell.CRATE:
-				col = Color(0.78, 0.52, 0.28)
+				if crate_tex:
+					draw_texture_rect(crate_tex, r, false)
+				else:
+					draw_rect(r, Color(0.78, 0.52, 0.28))
 			elif c == GameLogic.Cell.IRON_CRATE:
 				var hp: int = L.iron_hp.get(Vector2i(x, y), 2)
-				col = Color(0.50, 0.52, 0.58) if hp >= 2 else Color(0.62, 0.40, 0.35)
-			elif c == GameLogic.Cell.SHRINK_WALL:
-				col = Color(0.65, 0.12, 0.15)
-			else:
-				var fl: int = L.floor_grid[x][y]
-				if fl == GameLogic.Floor.ICE:
-					col = Color(0.18, 0.32, 0.50)
-				elif fl == GameLogic.Floor.MUD:
-					col = Color(0.22, 0.17, 0.10)
+				if iron_tex:
+					var tint := Color.WHITE if hp >= 2 else Color(1.0, 0.75, 0.65)
+					draw_texture_rect(iron_tex, r, false, tint)
 				else:
-					col = Color(0.12, 0.13, 0.16)
-			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, ts), col)
-			if c == GameLogic.Cell.IRON_CRATE:
-				var cx := o.x + x * ts + ts * 0.5
-				var cy := o.y + y * ts + ts * 0.5
-				var bar := ts * 0.06
-				draw_rect(Rect2(cx - ts * 0.25, cy - bar, ts * 0.5, bar * 2.0), Color(0.3, 0.3, 0.35))
-				draw_rect(Rect2(cx - bar, cy - ts * 0.25, bar * 2.0, ts * 0.5), Color(0.3, 0.3, 0.35))
-			elif c == GameLogic.Cell.EMPTY:
-				var fl: int = L.floor_grid[x][y]
-				if fl == GameLogic.Floor.ICE:
-					var d := ts * 0.08
-					var bx := o.x + x * ts
-					var by := o.y + y * ts
-					draw_rect(Rect2(bx + ts * 0.3, by + ts * 0.3, d, d), Color(0.35, 0.55, 0.75, 0.4))
-					draw_rect(Rect2(bx + ts * 0.6, by + ts * 0.6, d, d), Color(0.35, 0.55, 0.75, 0.4))
-				elif fl == GameLogic.Floor.MUD:
-					var d := ts * 0.07
-					var bx := o.x + x * ts
-					var by := o.y + y * ts
-					draw_rect(Rect2(bx + ts * 0.25, by + ts * 0.4, d, d), Color(0.14, 0.11, 0.06, 0.5))
-					draw_rect(Rect2(bx + ts * 0.55, by + ts * 0.25, d, d), Color(0.14, 0.11, 0.06, 0.5))
-					draw_rect(Rect2(bx + ts * 0.45, by + ts * 0.65, d, d), Color(0.14, 0.11, 0.06, 0.5))
-			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, 1.2), Color(0, 0, 0, 0.18))
-			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, 1.2, ts), Color(0, 0, 0, 0.18))
+					draw_rect(r, Color(0.50, 0.52, 0.58) if hp >= 2 else Color(0.62, 0.40, 0.35))
+			elif c == GameLogic.Cell.SHRINK_WALL:
+				if shrink_tex:
+					draw_texture_rect(shrink_tex, r, false)
+				else:
+					draw_rect(r, Color(0.65, 0.12, 0.15))
+			elif c == GameLogic.Cell.WATER:
+				if water_tex:
+					draw_texture_rect(water_tex, r, false)
+				else:
+					draw_rect(r, Color(0.15, 0.35, 0.65))
+
+			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, 1.0), Color(0, 0, 0, 0.12))
+			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, 1.0, ts), Color(0, 0, 0, 0.12))
 
 	for pair in L.portals:
 		_draw_portal(pair, o, ts)

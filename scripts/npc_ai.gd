@@ -156,7 +156,7 @@ func _has_bombable_neighbor(bx: int, by: int) -> bool:
 		for i in range(1, _player.range_i + 1):
 			var nx: int = bx + d.x * i
 			var ny: int = by + d.y * i
-			if nx < 0 or ny < 0 or nx >= GameLogic.COLS or ny >= GameLogic.ROWS:
+			if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
 				break
 			var c: int = _logic.grid[nx][ny]
 			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.SHRINK_WALL:
@@ -191,7 +191,7 @@ func _bfs_escape_path(sx: int, sy: int, danger: Array) -> Array[Vector2i]:
 
 
 func _walkable_ignore_own_bomb(gx: int, gy: int) -> bool:
-	if gx < 0 or gy < 0 or gx >= GameLogic.COLS or gy >= GameLogic.ROWS:
+	if gx < 0 or gy < 0 or gx >= _logic.cols or gy >= _logic.rows:
 		return false
 	if _logic.grid[gx][gy] != GameLogic.Cell.EMPTY:
 		return false
@@ -292,9 +292,9 @@ func _random_reachable(gx: int, gy: int) -> Vector2i:
 func _build_danger_map() -> Array:
 	var L := _logic
 	var map: Array = []
-	for x in range(GameLogic.COLS):
+	for x in range(_logic.cols):
 		var col: Array = []
-		col.resize(GameLogic.ROWS)
+		col.resize(_logic.rows)
 		col.fill(false)
 		map.append(col)
 	for b in L.bombs:
@@ -304,16 +304,17 @@ func _build_danger_map() -> Array:
 			for i in range(1, bd.range_i + 1):
 				var nx: int = bd.gx + d.x * i
 				var ny: int = bd.gy + d.y * i
-				if nx < 0 or ny < 0 or nx >= GameLogic.COLS or ny >= GameLogic.ROWS:
+				if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
 					break
 				var c: int = L.grid[nx][ny]
 				if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
-					or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL:
+					or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL \
+					or c == GameLogic.Cell.WATER:
 					break
 				map[nx][ny] = true
 	for e in L.explosions:
 		var ex: GameLogic.ExplData = e
-		if ex.gx >= 0 and ex.gx < GameLogic.COLS and ex.gy >= 0 and ex.gy < GameLogic.ROWS:
+		if ex.gx >= 0 and ex.gx < _logic.cols and ex.gy >= 0 and ex.gy < _logic.rows:
 			map[ex.gx][ex.gy] = true
 	return map
 
@@ -324,11 +325,12 @@ func _mark_bomb_danger(danger: Array, bx: int, by: int, rng_i: int) -> void:
 		for i in range(1, rng_i + 1):
 			var nx: int = bx + d.x * i
 			var ny: int = by + d.y * i
-			if nx < 0 or ny < 0 or nx >= GameLogic.COLS or ny >= GameLogic.ROWS:
+			if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
 				break
 			var c: int = _logic.grid[nx][ny]
 			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
-				or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL:
+				or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL \
+				or c == GameLogic.Cell.WATER:
 				break
 			danger[nx][ny] = true
 

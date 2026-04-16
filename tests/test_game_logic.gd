@@ -50,6 +50,12 @@ func run() -> void:
 	test_portal_teleport()
 	test_shrink_zone()
 	test_floor_grid_dimensions()
+	test_dynamic_grid_size()
+	test_water_impassable()
+	test_grass_floor()
+	test_snow_speed()
+	test_sand_speed()
+	test_lava_damage()
 	print("  done.\n")
 
 
@@ -62,8 +68,8 @@ func _make(seed_v: int = 42) -> GameLogic:
 
 
 func _clear_around(gl: GameLogic, cx: int, cy: int, radius: int = 3) -> void:
-	for x in range(maxi(1, cx - radius), mini(GameLogic.COLS - 1, cx + radius + 1)):
-		for y in range(maxi(1, cy - radius), mini(GameLogic.ROWS - 1, cy + radius + 1)):
+	for x in range(maxi(1, cx - radius), mini(gl.cols - 1, cx + radius + 1)):
+		for y in range(maxi(1, cy - radius), mini(gl.rows - 1, cy + radius + 1)):
 			if gl.grid[x][y] == GameLogic.Cell.CRATE:
 				gl.grid[x][y] = GameLogic.Cell.EMPTY
 
@@ -80,26 +86,26 @@ func _finish_move(gl: GameLogic, pl: GameLogic.PlayerData) -> void:
 func test_grid_dimensions() -> void:
 	T.begin("grid_dimensions")
 	var gl := _make()
-	T.assert_eq(gl.grid.size(), GameLogic.COLS, "cols")
-	T.assert_eq(gl.grid[0].size(), GameLogic.ROWS, "rows")
+	T.assert_eq(gl.grid.size(), gl.cols, "cols")
+	T.assert_eq(gl.grid[0].size(), gl.rows, "rows")
 
 
 func test_grid_borders_are_walls() -> void:
 	T.begin("grid_borders_are_walls")
 	var gl := _make()
-	for x in range(GameLogic.COLS):
+	for x in range(gl.cols):
 		T.assert_eq(gl.grid[x][0], GameLogic.Cell.WALL, "bottom border x=%d" % x)
-		T.assert_eq(gl.grid[x][GameLogic.ROWS - 1], GameLogic.Cell.WALL, "top border x=%d" % x)
-	for y in range(GameLogic.ROWS):
+		T.assert_eq(gl.grid[x][gl.rows - 1], GameLogic.Cell.WALL, "top border x=%d" % x)
+	for y in range(gl.rows):
 		T.assert_eq(gl.grid[0][y], GameLogic.Cell.WALL, "left border y=%d" % y)
-		T.assert_eq(gl.grid[GameLogic.COLS - 1][y], GameLogic.Cell.WALL, "right border y=%d" % y)
+		T.assert_eq(gl.grid[gl.cols - 1][y], GameLogic.Cell.WALL, "right border y=%d" % y)
 
 
 func test_spawn_zones_clear() -> void:
 	T.begin("spawn_zones_clear")
 	var gl := _make()
 	T.assert_eq(gl.grid[1][1], GameLogic.Cell.EMPTY, "p1 spawn")
-	T.assert_eq(gl.grid[GameLogic.COLS - 2][GameLogic.ROWS - 2], GameLogic.Cell.EMPTY, "p2 spawn")
+	T.assert_eq(gl.grid[gl.cols - 2][gl.rows - 2], GameLogic.Cell.EMPTY, "p2 spawn")
 
 
 func test_deterministic_seed() -> void:
@@ -107,8 +113,8 @@ func test_deterministic_seed() -> void:
 	var a := _make(123)
 	var b := _make(123)
 	var same := true
-	for x in range(GameLogic.COLS):
-		for y in range(GameLogic.ROWS):
+	for x in range(a.cols):
+		for y in range(a.rows):
 			if a.grid[x][y] != b.grid[x][y]:
 				same = false
 	T.assert_true(same, "same seed → same grid")
@@ -174,12 +180,10 @@ func test_bomb_explodes_after_fuse() -> void:
 	var gl := _make()
 	_clear_around(gl, 1, 1, 5)
 	gl.try_place_bomb(gl.p1)
-	# move player away so they survive
 	gl.try_start_move(gl.p1, 1, 0)
 	_finish_move(gl, gl.p1)
 	gl.try_start_move(gl.p1, 1, 0)
 	_finish_move(gl, gl.p1)
-	# tick past fuse
 	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
 	T.assert_eq(gl.bombs.size(), 0, "bomb removed")
 	T.assert_true(gl.explosions.size() > 0, "explosion created")
@@ -202,7 +206,6 @@ func test_explosion_kills_player() -> void:
 	var gl := _make()
 	_clear_around(gl, 1, 1, 5)
 	gl.try_place_bomb(gl.p1)
-	# don't move - player stays on bomb
 	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
 	T.assert_false(gl.p1.alive, "p1 killed by own bomb")
 
@@ -211,13 +214,9 @@ func test_chain_explosion() -> void:
 	T.begin("chain_explosion")
 	var gl := _make()
 	_clear_around(gl, 1, 1, 6)
-	# place p1 bomb at (1,1)
 	gl.try_place_bomb(gl.p1)
-	# manually place a second bomb at (2,1) that would be in range
 	gl.bombs.append(GameLogic.BombData.new(2, 1, 1, 999.0, 1))
-	# move p1 far away
 	gl.p1.gx = 1.0; gl.p1.gy = 3.0; gl.p1.moving = false
-	# detonate first bomb
 	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
 	T.assert_eq(gl.bombs.size(), 0, "chain: both bombs detonated")
 
@@ -334,7 +333,7 @@ func test_bomb_slide_stops_at_wall() -> void:
 		gl.tick_moving_bombs(0.02)
 	var bd: GameLogic.BombData = gl.bombs[0]
 	T.assert_false(bd.moving, "stopped sliding")
-	T.assert_true(bd.gx < GameLogic.COLS, "within bounds")
+	T.assert_true(bd.gx < gl.cols, "within bounds")
 
 
 # ── 遥控引爆 ─────────────────────────────
@@ -434,8 +433,8 @@ func test_map_template() -> void:
 	var gl := GameLogic.new(42)
 	var arena: Dictionary = MapDefs.get_presets()[1]
 	gl.reset(arena)
-	T.assert_eq(gl.grid.size(), GameLogic.COLS, "cols")
-	T.assert_eq(gl.grid[0].size(), GameLogic.ROWS, "rows")
+	T.assert_eq(gl.grid.size(), gl.cols, "cols")
+	T.assert_eq(gl.grid[0].size(), gl.rows, "rows")
 	T.assert_eq(gl.grid[3][2], GameLogic.Cell.WALL, "arena wall (3,2)")
 	T.assert_eq(gl.grid[3][3], GameLogic.Cell.WALL, "arena wall (3,3)")
 	T.assert_eq(gl.grid[7][5], GameLogic.Cell.EMPTY, "arena center empty")
@@ -542,5 +541,134 @@ func test_shrink_zone() -> void:
 func test_floor_grid_dimensions() -> void:
 	T.begin("floor_grid_dimensions")
 	var gl := _make()
-	T.assert_eq(gl.floor_grid.size(), GameLogic.COLS, "floor cols")
-	T.assert_eq(gl.floor_grid[0].size(), GameLogic.ROWS, "floor rows")
+	T.assert_eq(gl.floor_grid.size(), gl.cols, "floor cols")
+	T.assert_eq(gl.floor_grid[0].size(), gl.rows, "floor rows")
+
+
+# ── 动态网格尺寸 ─────────────────────────
+
+func test_dynamic_grid_size() -> void:
+	T.begin("dynamic_grid_size")
+	var gl := GameLogic.new(42)
+	var map_dict: Dictionary = {
+		"cols": 21,
+		"rows": 15,
+		"template": [
+			"#####################",
+			"#.................G.#",
+			"#.#.#.#.#.#.#.#.#.#.#",
+			"#...................#",
+			"#.#.#.#.#.#.#.#.#.#.#",
+			"#...................#",
+			"#.#.#.#.#.#.#.#.#.#.#",
+			"#...................#",
+			"#.#.#.#.#.#.#.#.#.#.#",
+			"#...................#",
+			"#.#.#.#.#.#.#.#.#.#.#",
+			"#...................#",
+			"#.#.#.#.#.#.#.#.#.#.#",
+			"#.G.................#",
+			"#####################",
+		],
+		"spawns": [Vector2i(1, 1), Vector2i(19, 13), Vector2i(19, 1), Vector2i(1, 13), Vector2i(10, 7)],
+	}
+	gl.reset(map_dict)
+	T.assert_eq(gl.cols, 21, "cols=21")
+	T.assert_eq(gl.rows, 15, "rows=15")
+	T.assert_eq(gl.grid.size(), 21, "grid has 21 cols")
+	T.assert_eq(gl.grid[0].size(), 15, "grid has 15 rows")
+	T.assert_eq(gl.floor_grid[18][1], GameLogic.Floor.GRASS, "grass floor parsed")
+
+
+# ── 水面不可通行 ─────────────────────────
+
+func test_water_impassable() -> void:
+	T.begin("water_impassable")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.grid[2][1] = GameLogic.Cell.WATER
+	var ok := gl.try_start_move(gl.p1, 1, 0)
+	T.assert_false(ok, "cannot walk into water")
+	T.assert_eq(gl.p1.gx, 1.0, "stayed put")
+
+
+# ── 草地 ─────────────────────────────────
+
+func test_grass_floor() -> void:
+	T.begin("grass_floor")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.floor_grid[2][1] = GameLogic.Floor.GRASS
+	var ok := gl.try_start_move(gl.p1, 1, 0)
+	T.assert_true(ok, "can walk on grass")
+	_finish_move(gl, gl.p1)
+	T.assert_eq(gl.p1.gx, 2.0, "reached grass cell")
+
+
+# ── 雪地减速 ─────────────────────────────
+
+func test_snow_speed() -> void:
+	T.begin("snow_speed")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.try_start_move(gl.p1, 1, 0)
+	var normal_frames := 0
+	for i in range(200):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		normal_frames += 1
+		if gl.p1.aligned():
+			break
+	gl.p1.gx = 1.0; gl.p1.gy = 1.0; gl.p1.target_gx = 1.0; gl.p1.target_gy = 1.0; gl.p1.moving = false
+	gl.floor_grid[1][1] = GameLogic.Floor.SNOW
+	gl.floor_grid[2][1] = GameLogic.Floor.SNOW
+	gl.try_start_move(gl.p1, 1, 0)
+	var snow_frames := 0
+	for i in range(400):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		snow_frames += 1
+		if gl.p1.aligned():
+			break
+	T.assert_true(snow_frames > normal_frames, "snow slowed movement")
+
+
+# ── 沙地减速 ─────────────────────────────
+
+func test_sand_speed() -> void:
+	T.begin("sand_speed")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.try_start_move(gl.p1, 1, 0)
+	var normal_frames := 0
+	for i in range(200):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		normal_frames += 1
+		if gl.p1.aligned():
+			break
+	gl.p1.gx = 1.0; gl.p1.gy = 1.0; gl.p1.target_gx = 1.0; gl.p1.target_gy = 1.0; gl.p1.moving = false
+	gl.floor_grid[1][1] = GameLogic.Floor.SAND
+	gl.floor_grid[2][1] = GameLogic.Floor.SAND
+	gl.try_start_move(gl.p1, 1, 0)
+	var sand_frames := 0
+	for i in range(400):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		sand_frames += 1
+		if gl.p1.aligned():
+			break
+	T.assert_true(sand_frames > normal_frames, "sand slowed movement")
+
+
+# ── 岩浆伤害 ─────────────────────────────
+
+func test_lava_damage() -> void:
+	T.begin("lava_damage")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.floor_grid[1][1] = GameLogic.Floor.LAVA
+	T.assert_true(gl.p1.alive, "alive before lava")
+	for i in range(40):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+	T.assert_true(gl.p1.alive, "still alive (< 0.8s)")
+	T.assert_true(gl.p1.lava_timer > 0.0, "lava timer ticking")
+	for i in range(20):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+	T.assert_false(gl.p1.alive, "killed by lava after > 0.8s")
