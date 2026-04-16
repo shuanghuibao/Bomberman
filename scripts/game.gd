@@ -206,7 +206,7 @@ func _process(delta: float) -> void:
 	_tick_explosions(delta)
 
 	if phase != Phase.PLAYING:
-		if Input.is_key_just_pressed(KEY_R):
+		if Input.is_action_just_pressed("reset_match"):
 			reset_match()
 		queue_redraw()
 		return
@@ -215,14 +215,14 @@ func _process(delta: float) -> void:
 		queue_redraw()
 		return
 
-	if Input.is_key_just_pressed(KEY_R):
+	if Input.is_action_just_pressed("reset_match"):
 		reset_match()
 		_refresh_ui()
 		queue_redraw()
 		return
 
-	_update_player(p1, _read_dir_p1(), Input.is_key_just_pressed(KEY_SPACE), delta)
-	_update_player(p2, _read_dir_p2(), Input.is_key_just_pressed(KEY_ENTER), delta)
+	_update_player(p1, _read_dir_p1(), Input.is_action_just_pressed("p1_bomb"), delta)
+	_update_player(p2, _read_dir_p2(), Input.is_action_just_pressed("p2_bomb"), delta)
 	_tick_bombs(delta)
 	_resolve_phase()
 	_refresh_ui()
@@ -302,7 +302,7 @@ func _player_move_tick(pl: PlayerData, dt: float) -> void:
 	if pl.moving:
 		var dx := pl.target_gx - pl.gx
 		var dy := pl.target_gy - pl.gy
-		var len := hypotf(dx, dy)
+		var len := sqrt(dx * dx + dy * dy)
 		var step := MOVE_SPEED * dt
 		if len <= 0.0001 or step >= len:
 			pl.gx = pl.target_gx
@@ -507,7 +507,7 @@ func _draw() -> void:
 
 	for b in bombs:
 		var bd: BombData = b
-		var pulse := 0.5 + 0.5 * sinf(bd.time * 14.0)
+		var pulse := 0.5 + 0.5 * sin(bd.time * 14.0)
 		var inset := 6.0 + pulse * 2.0
 		var rx := o.x + bd.gx * TILE + inset
 		var ry := o.y + bd.gy * TILE + inset
