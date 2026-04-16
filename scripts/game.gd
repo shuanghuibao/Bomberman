@@ -1,17 +1,29 @@
 extends Node2D
 
-## 本地双人炸弹场：网格逻辑 + `_draw` 渲染 + CanvasLayer 官方 UI 壳
+## 本地双人炸弹场：网格 + 道具掉落/拾取 + `_draw` 渲染 + CanvasLayer UI
 
 const COLS := 15
 const ROWS := 11
-const TILE := 40.0
-const MOVE_SPEED := 6.5
+const BASE_SPEED := 5.0
+const MAX_SPEED := 9.5
+const SPEED_PER_SHOE := 1.2
 const BOMB_FUSE := 2.4
 const EXPLOSION_TTL := 0.45
-const HUD_H := 58.0
+const HUD_H := 78.0
+const GRID_PADDING := 12.0
+const DROP_CHANCE := 0.55
+
+var tile_size := 40.0
 
 enum Cell { EMPTY, WALL, CRATE }
 enum Phase { PLAYING, P1_WIN, P2_WIN, DRAW }
+enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP }
+
+# ── 颜色常量 ──────────────────────────────
+const CLR_PICKUP_BOMB := Color(0.28, 0.62, 1.0)
+const CLR_PICKUP_FIRE := Color(1.0, 0.42, 0.22)
+const CLR_PICKUP_SPEED := Color(0.25, 0.88, 0.42)
+
 
 class PlayerData:
 	var pid: int
@@ -20,6 +32,7 @@ class PlayerData:
 	var alive: bool = true
 	var max_bombs: int = 1
 	var range_i: int = 1
+	var speed_ups: int = 0
 	var last_bomb: Vector2i = Vector2i(999999, 999999)
 	var moving: bool = false
 	var target_gx: float = 0.0
@@ -40,8 +53,12 @@ class PlayerData:
 		alive = true
 		max_bombs = 1
 		range_i = 1
+		speed_ups = 0
 		last_bomb = Vector2i(999999, 999999)
 		moving = false
+
+	func move_speed() -> float:
+		return minf(BASE_SPEED + speed_ups * SPEED_PER_SHOE, MAX_SPEED)
 
 	func aligned() -> bool:
 		return (not moving) \
@@ -81,12 +98,24 @@ class ExplData:
 		ttl = t
 
 
+class PickupData:
+	var gx: int
+	var gy: int
+	var kind: int  # Pickup enum value
+
+	func _init(x: int, y: int, k: int) -> void:
+		gx = x
+		gy = y
+		kind = k
+
+
 var rng := RandomNumberGenerator.new()
 var grid: Array = []
 var p1 := PlayerData.new(0, 1, 1)
 var p2 := PlayerData.new(1, COLS - 2, ROWS - 2)
 var bombs: Array = []
 var explosions: Array = []
+var pickups: Array = []
 var phase: Phase = Phase.PLAYING
 var origin := Vector2.ZERO
 var match_paused: bool = false
@@ -113,11 +142,15 @@ func _ready() -> void:
 
 func _recalc_origin() -> void:
 	var vs := get_viewport().get_visible_rect().size
-	var wx := COLS * TILE
-	var wy := ROWS * TILE
+	var avail_w := vs.x - GRID_PADDING * 2.0
+	var avail_h := vs.y - HUD_H - GRID_PADDING * 2.0
+	tile_size = minf(avail_w / float(COLS), avail_h / float(ROWS))
+	tile_size = maxf(tile_size, 16.0)
+	var wx := COLS * tile_size
+	var wy := ROWS * tile_size
 	origin = Vector2(
-		maxf(8.0, (vs.x - wx) * 0.5),
-		HUD_H + maxf(8.0, (vs.y - HUD_H - wy) * 0.5)
+		(vs.x - wx) * 0.5,
+		HUD_H + (vs.y - HUD_H - wy) * 0.5
 	)
 	queue_redraw()
 
@@ -126,6 +159,7 @@ func reset_match() -> void:
 	phase = Phase.PLAYING
 	bombs.clear()
 	explosions.clear()
+	pickups.clear()
 	_build_grid()
 	p1.reset(1, 1)
 	p2.reset(COLS - 2, ROWS - 2)
@@ -151,7 +185,6 @@ func _build_grid() -> void:
 				grid[x][y] = Cell.WALL
 			else:
 				grid[x][y] = Cell.EMPTY
-
 	for x in range(1, COLS - 1):
 		for y in range(1, ROWS - 1):
 			if grid[x][y] != Cell.EMPTY:
@@ -195,6 +228,55 @@ func _bfs_reachable(sx: int, sy: int, reach: Dictionary) -> void:
 			if grid[n.x][n.y] == Cell.EMPTY:
 				q.append(n)
 
+
+# ── 道具 ──────────────────────────────────
+
+func _maybe_drop_pickup(x: int, y: int) -> void:
+	if rng.randf() > DROP_CHANCE:
+		return
+	var roll := rng.randf()
+	var kind: int
+	if roll < 0.38:
+		kind = Pickup.BOMB_UP
+	elif roll < 0.72:
+		kind = Pickup.FIRE_UP
+	else:
+		kind = Pickup.SPEED_UP
+	pickups.append(PickupData.new(x, y, kind))
+
+
+func _pickup_at(gx: int, gy: int) -> PickupData:
+	for p in pickups:
+		var pd: PickupData = p
+		if pd.gx == gx and pd.gy == gy:
+			return pd
+	return null
+
+
+func _try_collect_pickup(pl: PlayerData) -> void:
+	var gx := int(roundf(pl.gx))
+	var gy := int(roundf(pl.gy))
+	var pd: PickupData = _pickup_at(gx, gy)
+	if pd == null:
+		return
+	match pd.kind:
+		Pickup.BOMB_UP:
+			pl.max_bombs = mini(pl.max_bombs + 1, 8)
+		Pickup.FIRE_UP:
+			pl.range_i = mini(pl.range_i + 1, 8)
+		Pickup.SPEED_UP:
+			pl.speed_ups = mini(pl.speed_ups + 1, 5)
+	pickups.erase(pd)
+
+
+func _destroy_pickups_at(x: int, y: int) -> void:
+	for i in range(pickups.size() - 1, -1, -1):
+		var pd: PickupData = pickups[i]
+		if pd.gx == x and pd.gy == y:
+			pickups.remove_at(i)
+
+
+# ── 主循环 ────────────────────────────────
 
 func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("ui_cancel"):
@@ -272,6 +354,7 @@ func _update_player(pl: PlayerData, dir: Vector2i, want_bomb: bool, delta: float
 	if dir != Vector2i.ZERO:
 		_try_start_move(pl, dir.x, dir.y)
 	_player_move_tick(pl, delta)
+	_try_collect_pickup(pl)
 	if want_bomb:
 		_try_place_bomb(pl)
 
@@ -303,7 +386,7 @@ func _player_move_tick(pl: PlayerData, dt: float) -> void:
 		var dx := pl.target_gx - pl.gx
 		var dy := pl.target_gy - pl.gy
 		var len := sqrt(dx * dx + dy * dy)
-		var step := MOVE_SPEED * dt
+		var step := pl.move_speed() * dt
 		if len <= 0.0001 or step >= len:
 			pl.gx = pl.target_gx
 			pl.gy = pl.target_gy
@@ -408,15 +491,16 @@ func _spread_blast(ox: int, oy: int, dx: int, dy: int, range_i: int, q: Array) -
 		var stop := _blast_cell(x, y, q)
 		if c == Cell.CRATE:
 			grid[x][y] = Cell.EMPTY
+			_maybe_drop_pickup(x, y)
 			break
 		if stop:
 			break
 
 
-## 返回 true 表示该方向爆炸终止
 func _blast_cell(x: int, y: int, q: Array) -> bool:
 	explosions.append(ExplData.new(x, y, EXPLOSION_TTL))
 	_damage_at(x, y)
+	_destroy_pickups_at(x, y)
 	var other: BombData = bomb_at(x, y)
 	if other != null:
 		if other.time > 0.0:
@@ -467,11 +551,13 @@ func _resolve_phase() -> void:
 
 
 func _refresh_ui() -> void:
-	_lbl_hint.text = "P1：WASD 移动 · 空格放雷     P2：方向键 · 回车放雷     R 重开     Esc 暂停"
+	var p1s := "P1 炸弹%d 火力%d 速度%d" % [p1.max_bombs, p1.range_i, p1.speed_ups]
+	var p2s := "P2 炸弹%d 火力%d 速度%d" % [p2.max_bombs, p2.range_i, p2.speed_ups]
+	_lbl_hint.text = "%s  |  %s  |  WASD/空格  方向键/回车  R重开  Esc暂停" % [p1s, p2s]
 	if phase == Phase.PLAYING:
 		_lbl_phase.text = "对局进行中" if not match_paused else "已暂停"
 	else:
-		_lbl_phase.text = "本局结束 — R 或点击下方按钮再来一局"
+		_lbl_phase.text = "本局结束"
 
 
 func _go_main_menu() -> void:
@@ -488,8 +574,15 @@ func _on_rematch() -> void:
 	reset_match()
 
 
+# ── 绘制 ──────────────────────────────────
+
 func _draw() -> void:
 	var o := origin
+	var ts := tile_size
+
+	# 地图底色（整片暗色背景）
+	draw_rect(Rect2(o.x, o.y, COLS * ts, ROWS * ts), Color(0.09, 0.10, 0.13))
+
 	for x in range(COLS):
 		for y in range(ROWS):
 			var c: Cell = grid[x][y]
@@ -501,43 +594,83 @@ func _draw() -> void:
 					col = Color(0.78, 0.52, 0.28)
 				_:
 					col = Color(0.12, 0.13, 0.16)
-			draw_rect(Rect2(o.x + x * TILE, o.y + y * TILE, TILE, TILE), col)
-			draw_rect(Rect2(o.x + x * TILE, o.y + y * TILE, TILE, 1.2), Color(0, 0, 0, 0.18))
-			draw_rect(Rect2(o.x + x * TILE, o.y + y * TILE, 1.2, TILE), Color(0, 0, 0, 0.18))
+			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, ts), col)
+			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, 1.2), Color(0, 0, 0, 0.18))
+			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, 1.2, ts), Color(0, 0, 0, 0.18))
 
+	# 道具
+	for p in pickups:
+		var pd: PickupData = p
+		_draw_pickup(pd, o, ts)
+
+	# 炸弹
 	for b in bombs:
 		var bd: BombData = b
 		var pulse := 0.5 + 0.5 * sin(bd.time * 14.0)
-		var inset := 6.0 + pulse * 2.0
-		var rx := o.x + bd.gx * TILE + inset
-		var ry := o.y + bd.gy * TILE + inset
-		var sz := TILE - inset * 2.0
+		var inset := ts * 0.15 + pulse * ts * 0.05
+		var rx := o.x + bd.gx * ts + inset
+		var ry := o.y + bd.gy * ts + inset
+		var sz := ts - inset * 2.0
 		draw_rect(Rect2(rx, ry, sz, sz), Color(0.05, 0.05, 0.06))
-		draw_rect(Rect2(rx + 3.0, ry + 3.0, sz - 6.0, sz - 6.0), Color(0.95, 0.35, 0.12))
+		var inner := ts * 0.08
+		draw_rect(Rect2(rx + inner, ry + inner, sz - inner * 2.0, sz - inner * 2.0), Color(0.95, 0.35, 0.12))
 
+	# 爆炸
 	for e in explosions:
 		var ex: ExplData = e
 		var t := ex.ttl / EXPLOSION_TTL
-		var ins := 10.0 * (1.0 - t)
+		var ins := ts * 0.25 * (1.0 - t)
 		draw_rect(
-			Rect2(o.x + ex.gx * TILE + ins, o.y + ex.gy * TILE + ins, TILE - ins * 2.0, TILE - ins * 2.0),
+			Rect2(o.x + ex.gx * ts + ins, o.y + ex.gy * ts + ins, ts - ins * 2.0, ts - ins * 2.0),
 			Color(1.0, 0.85 * t, 0.15 * t, 0.85)
 		)
 
+	# 玩家
 	_draw_player(p1, Color(0.35, 0.75, 1.0))
 	_draw_player(p2, Color(1.0, 0.52, 0.38))
+
+
+func _draw_pickup(pd: PickupData, o: Vector2, ts: float) -> void:
+	var m := ts * 0.28
+	var col: Color
+	match pd.kind:
+		Pickup.BOMB_UP:
+			col = CLR_PICKUP_BOMB
+		Pickup.FIRE_UP:
+			col = CLR_PICKUP_FIRE
+		Pickup.SPEED_UP:
+			col = CLR_PICKUP_SPEED
+		_:
+			col = Color.WHITE
+	# 底色圆角感（用两层方块模拟）
+	var bg := col.darkened(0.55)
+	draw_rect(Rect2(o.x + pd.gx * ts + m - 2.0, o.y + pd.gy * ts + m - 2.0, ts - (m - 2.0) * 2.0, ts - (m - 2.0) * 2.0), bg)
+	draw_rect(Rect2(o.x + pd.gx * ts + m, o.y + pd.gy * ts + m, ts - m * 2.0, ts - m * 2.0), col)
+	# 内部小标记区分类型
+	var cx := o.x + pd.gx * ts + ts * 0.5
+	var cy := o.y + pd.gy * ts + ts * 0.5
+	var dot := ts * 0.08
+	match pd.kind:
+		Pickup.BOMB_UP:
+			draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
+		Pickup.FIRE_UP:
+			draw_rect(Rect2(cx - dot * 2.5, cy - dot, dot * 5.0, dot * 2.0), Color.WHITE)
+			draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
+		Pickup.SPEED_UP:
+			draw_rect(Rect2(cx - dot * 1.5, cy - dot * 1.5, dot * 3.0, dot * 3.0), Color.WHITE)
 
 
 func _draw_player(pl: PlayerData, col: Color) -> void:
 	if not pl.alive:
 		return
 	var o := origin
-	var m := 8.0
+	var ts := tile_size
+	var m := ts * 0.2
 	draw_rect(
-		Rect2(o.x + pl.gx * TILE + m, o.y + pl.gy * TILE + m, TILE - m * 2.0, TILE - m * 2.0),
+		Rect2(o.x + pl.gx * ts + m, o.y + pl.gy * ts + m, ts - m * 2.0, ts - m * 2.0),
 		col
 	)
 	draw_rect(
-		Rect2(o.x + pl.gx * TILE + m, o.y + pl.gy * TILE + TILE - m - 4.0, TILE - m * 2.0, 4.0),
+		Rect2(o.x + pl.gx * ts + m, o.y + pl.gy * ts + ts - m - 4.0, ts - m * 2.0, 4.0),
 		Color(0, 0, 0, 0.25)
 	)

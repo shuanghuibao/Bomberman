@@ -13,11 +13,11 @@ layer = 20
 layout_mode = 1
 anchors_preset = 10
 anchor_right = 1.0
-offset_bottom = 58.0
+offset_bottom = 72.0
 grow_horizontal = 2
 grow_vertical = 0
 theme_override_constants/margin_left = 14
-theme_override_constants/margin_top = 8
+theme_override_constants/margin_top = 12
 theme_override_constants/margin_right = 14
 theme_override_constants/margin_bottom = 8
 
