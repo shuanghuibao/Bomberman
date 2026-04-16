@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit Tests (Godot ${{ matrix.godot }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        godot: ["4.4.1"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ matrix.godot }}
+          use-dotnet: false
+          include-templates: false
+
+      - name: Import project (generate .godot cache)
+        run: |
+          godot --headless --import 2>&1 || true
+        timeout-minutes: 2
+
+      - name: Run unit tests
+        run: |
+          godot --headless -s tests/test_runner.gd 2>&1
+        timeout-minutes: 3
+
+  lint:
+    name: GDScript static check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: "4.4.1"
+          use-dotnet: false
+          include-templates: false
+
+      - name: Import project
+        run: |
+          godot --headless --import 2>&1 || true
+        timeout-minutes: 2
+
+      - name: Check scripts parse without errors
+        run: |
+          EXIT=0
+          for f in $(find scripts tests -name '*.gd'); do
+            if ! godot --headless --check-only -s "$f" 2>&1; then
+              echo "FAIL: $f"
+              EXIT=1
+            fi
+          done
+          exit $EXIT
+        timeout-minutes: 2

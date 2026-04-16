@@ -65,12 +65,18 @@ horizontal_alignment = 1
 layout_mode = 2
 theme_override_font_sizes/font_size = 15
 theme_override_colors/font_color = Color(0.62, 0.68, 0.76, 1)
-text = "本地双人 · 面向 Steam 的桌面原型"
+text = "单人 / 本地双人 · 面向 Steam 的桌面原型"
 horizontal_alignment = 1
 
 [node name="Spacer" type="Control" parent="Center/Card/Margin/VBox"]
 custom_minimum_size = Vector2(0, 6)
 layout_mode = 2
+
+[node name="BtnSolo" type="Button" parent="Center/Card/Margin/VBox"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 48)
+layout_mode = 2
+text = "单人模式（vs NPC）"
 
 [node name="BtnLocal" type="Button" parent="Center/Card/Margin/VBox"]
 unique_name_in_owner = true
