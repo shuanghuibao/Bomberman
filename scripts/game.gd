@@ -89,6 +89,9 @@ func _setup_npc_players() -> void:
 	for i in range(npc_count):
 		var spawn_idx := 2 + i
 		var spawn: Vector2i = spawns[spawn_idx] if spawn_idx < spawns.size() else Vector2i(13, 9)
+		if logic.grid[spawn.x][spawn.y] != GameLogic.Cell.EMPTY:
+			logic.grid[spawn.x][spawn.y] = GameLogic.Cell.EMPTY
+			logic.iron_hp.erase(spawn)
 		var pl := GameLogic.PlayerData.new(10 + i, spawn.x, spawn.y)
 		npc_players.append(pl)
 		var ai = NpcAIScript.new(logic, pl)
@@ -98,8 +101,10 @@ func _setup_npc_players() -> void:
 				var cx := spawn.x + dx
 				var cy := spawn.y + dy
 				if cx > 0 and cy > 0 and cx < GameLogic.COLS - 1 and cy < GameLogic.ROWS - 1:
-					if logic.grid[cx][cy] == GameLogic.Cell.CRATE:
+					var cell: int = logic.grid[cx][cy]
+					if cell == GameLogic.Cell.CRATE or cell == GameLogic.Cell.IRON_CRATE:
 						logic.grid[cx][cy] = GameLogic.Cell.EMPTY
+						logic.iron_hp.erase(Vector2i(cx, cy))
 
 
 func _recalc_origin() -> void:
@@ -183,12 +188,12 @@ func _process(delta: float) -> void:
 func _update_npc_player(pl: GameLogic.PlayerData, dir: Vector2i, want_bomb: bool, dt: float) -> void:
 	if not pl.alive:
 		return
+	if want_bomb:
+		_try_place_bomb_for(pl)
 	if dir != Vector2i.ZERO:
 		logic.try_start_move(pl, dir.x, dir.y)
 	logic.player_move_tick(pl, dt)
 	logic.try_collect_pickup(pl)
-	if want_bomb:
-		_try_place_bomb_for(pl)
 
 
 func _try_place_bomb_for(pl: GameLogic.PlayerData) -> void:

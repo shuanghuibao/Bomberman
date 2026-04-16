@@ -1,20 +1,30 @@
 class_name NpcAI
 extends RefCounted
 
-## NPC AI：目标持久化 + 玩家追击 + 智能炸弹 + 防抖
+## Bomberman NPC — Easy difficulty
+##
+## Industry-standard state machine:
+##   IDLE  → brief pause, prevents re-entering danger
+##   WANDER → BFS walk toward nearest crate / random cell
+##   FLEE  → follow pre-computed full escape path cell-by-cell
+##
+## Bomb + escape in the SAME tick (game.gd places bomb before move).
+## Only moves once per think cycle — no cached direction between ticks.
 
-const THINK_INTERVAL := 0.18
-const DIRS: Array[Vector2i] = [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]
+enum State { IDLE, WANDER, FLEE }
+
+const THINK_INTERVAL := 0.25
+const DIRS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 
 var _logic: GameLogic
 var _player: GameLogic.PlayerData
-var _timer: float = 0.0
 var _rng := RandomNumberGenerator.new()
+var _timer: float = 0.0
 
-var _goal: Vector2i = Vector2i(-1, -1)
-var _goal_ttl: float = 0.0
-var _last_pos: Vector2i = Vector2i(-1, -1)
-var _stuck_ticks: int = 0
+var _state: int = State.IDLE
+var _idle_time: float = 0.5
+var _flee_path: Array[Vector2i] = []
+var _wander_target: Vector2i = Vector2i(-1, -1)
 
 
 func _init(logic: GameLogic, player: GameLogic.PlayerData) -> void:
@@ -23,95 +33,125 @@ func _init(logic: GameLogic, player: GameLogic.PlayerData) -> void:
 	_rng.randomize()
 
 
+# ── 每帧入口 ─────────────────────────────
+
 func tick(dt: float) -> Dictionary:
+	if not _player.alive:
+		return {"dir": Vector2i.ZERO, "bomb": false}
+
 	_timer -= dt
-	_goal_ttl -= dt
 	if _timer > 0.0:
 		return {"dir": Vector2i.ZERO, "bomb": false}
-	_timer = THINK_INTERVAL + _rng.randf_range(-0.03, 0.03)
+	_timer = THINK_INTERVAL
 	return _think()
 
 
 func _think() -> Dictionary:
-	if not _player.alive:
-		return {"dir": Vector2i.ZERO, "bomb": false}
-
 	var gx := int(roundf(_player.gx))
 	var gy := int(roundf(_player.gy))
 	var pos := Vector2i(gx, gy)
-
-	if pos == _last_pos:
-		_stuck_ticks += 1
-	else:
-		_stuck_ticks = 0
-	_last_pos = pos
-
 	var danger := _build_danger_map()
-	var on_danger: bool = danger[gx][gy]
 
-	if on_danger:
-		_goal = Vector2i(-1, -1)
-		var safe_dir := _find_safe_dir(gx, gy, danger)
-		if safe_dir != Vector2i.ZERO:
-			return {"dir": safe_dir, "bomb": false}
-		return {"dir": _find_any_walkable_dir(gx, gy), "bomb": false}
+	# ── Priority 1: react to danger ──────────
+	if danger[gx][gy]:
+		if _state != State.FLEE or _flee_path.is_empty():
+			_flee_path = _bfs_escape_path(gx, gy, danger)
+		_state = State.FLEE
 
-	if _should_place_bomb_smart(gx, gy, danger):
-		_goal = Vector2i(-1, -1)
-		return {"dir": Vector2i.ZERO, "bomb": true}
+	# ── FLEE ─────────────────────────────────
+	if _state == State.FLEE:
+		return _do_flee(pos, gx, gy, danger)
 
-	if _goal_ttl <= 0.0 or _goal == pos or _goal == Vector2i(-1, -1) or _stuck_ticks >= 4:
-		_pick_goal(gx, gy)
-		_stuck_ticks = 0
+	# ── IDLE ─────────────────────────────────
+	if _state == State.IDLE:
+		_idle_time -= THINK_INTERVAL
+		if _idle_time > 0.0:
+			return {"dir": Vector2i.ZERO, "bomb": false}
+		_state = State.WANDER
+		_wander_target = _pick_wander_target(gx, gy)
 
-	if _goal != Vector2i(-1, -1):
-		var dir := _bfs_first_step(gx, gy, _goal)
-		if dir != Vector2i.ZERO:
-			return {"dir": dir, "bomb": false}
-		_goal = Vector2i(-1, -1)
-
-	return {"dir": _find_any_walkable_dir(gx, gy), "bomb": false}
+	# ── WANDER ───────────────────────────────
+	return _do_wander(pos, gx, gy, danger)
 
 
-# ── 目标选择 ─────────────────────────────
+# ── FLEE 状态 ────────────────────────────
 
-func _pick_goal(gx: int, gy: int) -> void:
-	var bomb_spot := _find_bomb_spot(gx, gy)
-	if bomb_spot != Vector2i(-1, -1):
-		_goal = bomb_spot
-		_goal_ttl = 2.5
-		return
+func _do_flee(pos: Vector2i, gx: int, gy: int, danger: Array) -> Dictionary:
+	_pop_reached(pos)
 
-	var chase := _find_player_approach(gx, gy)
-	if chase != Vector2i(-1, -1):
-		_goal = chase
-		_goal_ttl = 2.0
-		return
+	if _flee_path.is_empty():
+		if not danger[gx][gy]:
+			_enter_idle()
+			return {"dir": Vector2i.ZERO, "bomb": false}
+		_flee_path = _bfs_escape_path(gx, gy, danger)
+		if _flee_path.is_empty():
+			return {"dir": _any_safe_dir(gx, gy, danger), "bomb": false}
 
-	_goal = _random_reachable(gx, gy)
-	_goal_ttl = 1.2
+	var next: Vector2i = _flee_path[0]
+	var d := next - pos
+	if d.x < -1 or d.x > 1 or d.y < -1 or d.y > 1 or (d.x != 0 and d.y != 0):
+		_flee_path = _bfs_escape_path(gx, gy, danger)
+		if _flee_path.is_empty():
+			return {"dir": _any_safe_dir(gx, gy, danger), "bomb": false}
+		next = _flee_path[0]
+		d = next - pos
 
+	if not _logic.walkable_for(next.x, next.y, _player):
+		_flee_path = _bfs_escape_path(gx, gy, danger)
+		if _flee_path.is_empty():
+			return {"dir": _any_safe_dir(gx, gy, danger), "bomb": false}
+		next = _flee_path[0]
+		d = next - pos
 
-func _find_bomb_spot(gx: int, gy: int) -> Vector2i:
-	var visited: Dictionary = {}
-	var queue: Array[Vector2i] = [Vector2i(gx, gy)]
-	visited[Vector2i(gx, gy)] = true
-	while not queue.is_empty():
-		var cur: Vector2i = queue.pop_front()
-		if _has_bombable_target(cur.x, cur.y):
-			return cur
-		for d: Vector2i in DIRS:
-			var nv := Vector2i(cur.x + d.x, cur.y + d.y)
-			if visited.has(nv):
-				continue
-			if not _logic.walkable_for(nv.x, nv.y, _player):
-				continue
-			visited[nv] = true
-			queue.append(nv)
-	return Vector2i(-1, -1)
+	return {"dir": d, "bomb": false}
 
 
-func _has_bombable_target(bx: int, by: int) -> bool:
+# ── WANDER 状态 ──────────────────────────
+
+func _do_wander(pos: Vector2i, gx: int, gy: int, danger: Array) -> Dictionary:
+	if _wander_target == Vector2i(-1, -1) or _wander_target == pos:
+		var bomb_result := _try_bomb_at(gx, gy, danger)
+		if bomb_result.size() > 0:
+			return bomb_result
+		_wander_target = _pick_wander_target(gx, gy)
+		if _wander_target == Vector2i(-1, -1):
+			return {"dir": Vector2i.ZERO, "bomb": false}
+
+	var step := _bfs_first_step(gx, gy, _wander_target)
+	if step == Vector2i.ZERO:
+		_wander_target = _random_reachable(gx, gy)
+		step = _bfs_first_step(gx, gy, _wander_target) if _wander_target != Vector2i(-1, -1) else Vector2i.ZERO
+	return {"dir": step, "bomb": false}
+
+
+# ── 放炸弹决策 ───────────────────────────
+
+func _try_bomb_at(gx: int, gy: int, danger: Array) -> Dictionary:
+	if _logic.bomb_at(gx, gy) != null:
+		return {}
+	var bomb_count := 0
+	for b in _logic.bombs:
+		var bd: GameLogic.BombData = b
+		if bd.owner_id == _player.pid:
+			bomb_count += 1
+	if bomb_count >= _player.max_bombs:
+		return {}
+	if not _has_bombable_neighbor(gx, gy):
+		return {}
+
+	var would := danger.duplicate(true)
+	_mark_bomb_danger(would, gx, gy, _player.range_i)
+	var path := _bfs_escape_path(gx, gy, would)
+	if path.is_empty():
+		return {}
+
+	_state = State.FLEE
+	_flee_path = path
+	var first_step := path[0] - Vector2i(gx, gy)
+	return {"dir": first_step, "bomb": true}
+
+
+func _has_bombable_neighbor(bx: int, by: int) -> bool:
 	for d: Vector2i in DIRS:
 		for i in range(1, _player.range_i + 1):
 			var nx: int = bx + d.x * i
@@ -126,70 +166,54 @@ func _has_bombable_target(bx: int, by: int) -> bool:
 	return false
 
 
-func _find_player_approach(gx: int, gy: int) -> Vector2i:
-	var enemies: Array[Vector2i] = _get_enemy_positions()
-	if enemies.is_empty():
-		return Vector2i(-1, -1)
-	var best := enemies[0]
-	var best_d := absi(gx - best.x) + absi(gy - best.y)
-	for i in range(1, enemies.size()):
-		var d := absi(gx - enemies[i].x) + absi(gy - enemies[i].y)
-		if d < best_d:
-			best_d = d
-			best = enemies[i]
-	var candidates: Array[Vector2i] = []
-	for d: Vector2i in DIRS:
-		for r in range(1, _player.range_i + 1):
-			var cx: int = best.x + d.x * r
-			var cy: int = best.y + d.y * r
-			if cx < 0 or cy < 0 or cx >= GameLogic.COLS or cy >= GameLogic.ROWS:
-				break
-			if _logic.grid[cx][cy] != GameLogic.Cell.EMPTY:
-				break
-			candidates.append(Vector2i(cx, cy))
-	if candidates.is_empty():
-		return Vector2i(-1, -1)
-	var pick := candidates[0]
-	var pick_d := absi(gx - pick.x) + absi(gy - pick.y)
-	for i in range(1, candidates.size()):
-		var cd := absi(gx - candidates[i].x) + absi(gy - candidates[i].y)
-		if cd < pick_d:
-			pick_d = cd
-			pick = candidates[i]
-	return pick
+# ── BFS 完整逃生路径 ─────────────────────
 
+func _bfs_escape_path(sx: int, sy: int, danger: Array) -> Array[Vector2i]:
+	var start := Vector2i(sx, sy)
+	var visited: Dictionary = {start: true}
+	var parent: Dictionary = {}
+	var queue: Array[Vector2i] = [start]
 
-func _get_enemy_positions() -> Array[Vector2i]:
-	var out: Array[Vector2i] = []
-	if _logic.p1.alive and _logic.p1.pid != _player.pid:
-		out.append(Vector2i(int(roundf(_logic.p1.gx)), int(roundf(_logic.p1.gy))))
-	if _logic.p2.alive and _logic.p2.pid != _player.pid:
-		out.append(Vector2i(int(roundf(_logic.p2.gx)), int(roundf(_logic.p2.gy))))
-	return out
-
-
-func _random_reachable(gx: int, gy: int) -> Vector2i:
-	var visited: Array[Vector2i] = []
-	var queue: Array[Vector2i] = [Vector2i(gx, gy)]
-	var seen: Dictionary = {Vector2i(gx, gy): true}
 	while not queue.is_empty():
 		var cur: Vector2i = queue.pop_front()
-		visited.append(cur)
 		for d: Vector2i in DIRS:
 			var nv := Vector2i(cur.x + d.x, cur.y + d.y)
-			if seen.has(nv):
+			if visited.has(nv):
 				continue
-			if not _logic.walkable_for(nv.x, nv.y, _player):
+			if not _walkable_ignore_own_bomb(nv.x, nv.y):
 				continue
-			seen[nv] = true
+			parent[nv] = cur
+			if not danger[nv.x][nv.y]:
+				return _build_path(parent, nv, start)
+			visited[nv] = true
 			queue.append(nv)
-	if visited.size() <= 1:
-		return Vector2i(-1, -1)
-	var idx := _rng.randi_range(maxi(1, visited.size() / 3), visited.size() - 1)
-	return visited[idx]
+	return []
 
 
-# ── BFS 导航 ─────────────────────────────
+func _walkable_ignore_own_bomb(gx: int, gy: int) -> bool:
+	if gx < 0 or gy < 0 or gx >= GameLogic.COLS or gy >= GameLogic.ROWS:
+		return false
+	if _logic.grid[gx][gy] != GameLogic.Cell.EMPTY:
+		return false
+	var b: GameLogic.BombData = _logic.bomb_at(gx, gy)
+	if b != null:
+		if b.owner_id == _player.pid:
+			return true
+		return _player.can_stand_on_bomb(gx, gy)
+	return true
+
+
+func _build_path(parent: Dictionary, target: Vector2i, start: Vector2i) -> Array[Vector2i]:
+	var path: Array[Vector2i] = []
+	var cur := target
+	while cur != start:
+		path.append(cur)
+		cur = parent[cur]
+	path.reverse()
+	return path
+
+
+# ── BFS 导航（单步） ─────────────────────
 
 func _bfs_first_step(sx: int, sy: int, target: Vector2i) -> Vector2i:
 	if sx == target.x and sy == target.y:
@@ -200,87 +224,67 @@ func _bfs_first_step(sx: int, sy: int, target: Vector2i) -> Vector2i:
 	var queue: Array[Vector2i] = [start]
 	while not queue.is_empty():
 		var cur: Vector2i = queue.pop_front()
-		if cur == target:
-			return _trace_back(parent, cur, start)
 		for d: Vector2i in DIRS:
 			var nv := Vector2i(cur.x + d.x, cur.y + d.y)
 			if visited.has(nv):
 				continue
+			parent[nv] = cur
 			if nv == target:
-				parent[nv] = cur
-				return _trace_back(parent, nv, start)
+				var p := _build_path(parent, nv, start)
+				return p[0] - start if p.size() > 0 else Vector2i.ZERO
 			if not _logic.walkable_for(nv.x, nv.y, _player):
 				continue
 			visited[nv] = true
-			parent[nv] = cur
 			queue.append(nv)
 	return Vector2i.ZERO
 
 
-func _trace_back(parent: Dictionary, target: Vector2i, start: Vector2i) -> Vector2i:
-	var cur := target
-	while parent.has(cur) and parent[cur] != start:
-		cur = parent[cur]
-	if cur == start:
-		return Vector2i.ZERO
-	return cur - start
+# ── 目标选择 ─────────────────────────────
 
+func _pick_wander_target(gx: int, gy: int) -> Vector2i:
+	var start := Vector2i(gx, gy)
+	var visited: Dictionary = {start: true}
+	var queue: Array[Vector2i] = [start]
+	var candidates: Array[Vector2i] = []
 
-# ── 炸弹决策 ─────────────────────────────
-
-func _should_place_bomb_smart(gx: int, gy: int, danger: Array) -> bool:
-	if _logic.bomb_at(gx, gy) != null:
-		return false
-	var has_target := _has_bombable_target(gx, gy) or _player_in_blast(gx, gy)
-	if not has_target:
-		return false
-	return _can_escape(gx, gy, danger)
-
-
-func _player_in_blast(bx: int, by: int) -> bool:
-	var enemies := _get_enemy_positions()
-	for d: Vector2i in DIRS:
-		for i in range(1, _player.range_i + 1):
-			var nx: int = bx + d.x * i
-			var ny: int = by + d.y * i
-			if nx < 0 or ny < 0 or nx >= GameLogic.COLS or ny >= GameLogic.ROWS:
-				break
-			var c: int = _logic.grid[nx][ny]
-			if c != GameLogic.Cell.EMPTY:
-				break
-			var p := Vector2i(nx, ny)
-			for e: Vector2i in enemies:
-				if e == p:
-					return true
-	return false
-
-
-func _can_escape(gx: int, gy: int, danger: Array) -> bool:
-	var would := danger.duplicate(true)
-	_mark_bomb_danger(would, gx, gy, _player.range_i)
-	var visited: Dictionary = {}
-	var queue: Array[Vector2i] = []
-	for d: Vector2i in DIRS:
-		var nv := Vector2i(gx + d.x, gy + d.y)
-		if _logic.walkable_for(nv.x, nv.y, _player):
-			if not would[nv.x][nv.y]:
-				return true
-			visited[nv] = true
-			queue.append(nv)
 	while not queue.is_empty():
 		var cur: Vector2i = queue.pop_front()
+		if _has_bombable_neighbor(cur.x, cur.y):
+			candidates.append(cur)
+			if candidates.size() >= 3:
+				break
 		for d: Vector2i in DIRS:
 			var nv := Vector2i(cur.x + d.x, cur.y + d.y)
 			if visited.has(nv):
 				continue
 			if not _logic.walkable_for(nv.x, nv.y, _player):
 				continue
-			if not would[nv.x][nv.y]:
-				return true
 			visited[nv] = true
-			if visited.size() < 12:
-				queue.append(nv)
-	return false
+			queue.append(nv)
+
+	if not candidates.is_empty():
+		return candidates[_rng.randi_range(0, candidates.size() - 1)]
+	return _random_reachable(gx, gy)
+
+
+func _random_reachable(gx: int, gy: int) -> Vector2i:
+	var cells: Array[Vector2i] = []
+	var queue: Array[Vector2i] = [Vector2i(gx, gy)]
+	var seen: Dictionary = {Vector2i(gx, gy): true}
+	while not queue.is_empty():
+		var cur: Vector2i = queue.pop_front()
+		cells.append(cur)
+		for d: Vector2i in DIRS:
+			var nv := Vector2i(cur.x + d.x, cur.y + d.y)
+			if seen.has(nv):
+				continue
+			if not _logic.walkable_for(nv.x, nv.y, _player):
+				continue
+			seen[nv] = true
+			queue.append(nv)
+	if cells.size() <= 1:
+		return Vector2i(-1, -1)
+	return cells[_rng.randi_range(1, cells.size() - 1)]
 
 
 # ── 危险地图 ─────────────────────────────
@@ -303,9 +307,14 @@ func _build_danger_map() -> Array:
 				if nx < 0 or ny < 0 or nx >= GameLogic.COLS or ny >= GameLogic.ROWS:
 					break
 				var c: int = L.grid[nx][ny]
-				if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL:
+				if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
+					or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL:
 					break
 				map[nx][ny] = true
+	for e in L.explosions:
+		var ex: GameLogic.ExplData = e
+		if ex.gx >= 0 and ex.gx < GameLogic.COLS and ex.gy >= 0 and ex.gy < GameLogic.ROWS:
+			map[ex.gx][ex.gy] = true
 	return map
 
 
@@ -318,50 +327,39 @@ func _mark_bomb_danger(danger: Array, bx: int, by: int, rng_i: int) -> void:
 			if nx < 0 or ny < 0 or nx >= GameLogic.COLS or ny >= GameLogic.ROWS:
 				break
 			var c: int = _logic.grid[nx][ny]
-			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL:
+			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
+				or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL:
 				break
 			danger[nx][ny] = true
 
 
-func _find_safe_dir(gx: int, gy: int, danger: Array) -> Vector2i:
-	var best_dir := Vector2i.ZERO
-	var best_dist := 999
+# ── 辅助 ─────────────────────────────────
+
+func _enter_idle() -> void:
+	_state = State.IDLE
+	_idle_time = _rng.randf_range(0.3, 0.8)
+	_flee_path.clear()
+
+
+func _pop_reached(pos: Vector2i) -> void:
+	while not _flee_path.is_empty() and _flee_path[0] == pos:
+		_flee_path.remove_at(0)
+
+
+func _any_safe_dir(gx: int, gy: int, danger: Array) -> Vector2i:
 	var shuffled := DIRS.duplicate()
-	_shuffle_dirs(shuffled)
+	for i in range(shuffled.size() - 1, 0, -1):
+		var j := _rng.randi_range(0, i)
+		var tmp: Vector2i = shuffled[i]
+		shuffled[i] = shuffled[j]
+		shuffled[j] = tmp
 	for d: Vector2i in shuffled:
-		var nx: int = gx + d.x
-		var ny: int = gy + d.y
-		if not _logic.walkable_for(nx, ny, _player):
-			continue
-		if not danger[nx][ny]:
-			return d
-		for i in range(2, 6):
-			var fx: int = gx + d.x * i
-			var fy: int = gy + d.y * i
-			if fx < 0 or fy < 0 or fx >= GameLogic.COLS or fy >= GameLogic.ROWS:
-				break
-			if _logic.grid[fx][fy] != GameLogic.Cell.EMPTY:
-				break
-			if not danger[fx][fy]:
-				if i < best_dist:
-					best_dist = i
-					best_dir = d
-				break
-	return best_dir
-
-
-func _find_any_walkable_dir(gx: int, gy: int) -> Vector2i:
-	var shuffled := DIRS.duplicate()
-	_shuffle_dirs(shuffled)
+		var nx := gx + d.x
+		var ny := gy + d.y
+		if _logic.walkable_for(nx, ny, _player):
+			if not danger[nx][ny]:
+				return d
 	for d: Vector2i in shuffled:
 		if _logic.walkable_for(gx + d.x, gy + d.y, _player):
 			return d
 	return Vector2i.ZERO
-
-
-func _shuffle_dirs(arr: Array) -> void:
-	for i in range(arr.size() - 1, 0, -1):
-		var j := _rng.randi_range(0, i)
-		var tmp: Vector2i = arr[i]
-		arr[i] = arr[j]
-		arr[j] = tmp

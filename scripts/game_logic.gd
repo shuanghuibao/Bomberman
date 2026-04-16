@@ -274,7 +274,8 @@ func _build_default_grid(density: float) -> void:
 
 
 func _is_spawn_zone(x: int, y: int) -> bool:
-	return (x <= 2 and y <= 2) or (x >= COLS - 3 and y >= ROWS - 3)
+	return (x <= 2 and y <= 2) or (x >= COLS - 3 and y >= ROWS - 3) \
+		or (x >= COLS - 3 and y <= 2) or (x <= 2 and y >= ROWS - 3)
 
 
 func _is_near_any_spawn(x: int, y: int, spawns: Array) -> bool:

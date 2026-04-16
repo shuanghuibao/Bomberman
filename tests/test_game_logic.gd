@@ -436,8 +436,8 @@ func test_map_template() -> void:
 	gl.reset(arena)
 	T.assert_eq(gl.grid.size(), GameLogic.COLS, "cols")
 	T.assert_eq(gl.grid[0].size(), GameLogic.ROWS, "rows")
-	T.assert_eq(gl.grid[2][2], GameLogic.Cell.WALL, "arena wall (2,2)")
 	T.assert_eq(gl.grid[3][2], GameLogic.Cell.WALL, "arena wall (3,2)")
+	T.assert_eq(gl.grid[3][3], GameLogic.Cell.WALL, "arena wall (3,3)")
 	T.assert_eq(gl.grid[7][5], GameLogic.Cell.EMPTY, "arena center empty")
 
 
