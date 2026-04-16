@@ -67,6 +67,22 @@ func play_curse() -> void:
 	_play_tone(180.0, 0.15, -7.0)
 
 
+func play_teleport() -> void:
+	_play_tone(880.0, 0.04, -9.0)
+	await get_tree().create_timer(0.04).timeout
+	_play_tone(1100.0, 0.04, -9.0)
+
+
+func play_shrink() -> void:
+	_play_noise(0.12, -7.0)
+	await get_tree().create_timer(0.06).timeout
+	_play_tone(160.0, 0.10, -6.0)
+
+
+func play_iron_hit() -> void:
+	_play_tone(280.0, 0.06, -6.0)
+
+
 func _play_tone(freq: float, dur: float, vol_db: float) -> void:
 	var sample_rate := 22050
 	var frames := int(dur * sample_rate)

@@ -14,8 +14,13 @@ const DROP_CHANCE := 0.55
 const BOMB_SLIDE_INTERVAL := 0.06
 const SLOW_DURATION := 3.0
 const SLOW_FACTOR := 0.45
+const MUD_FACTOR := 0.5
+const PORTAL_COOLDOWN := 0.5
+const SHRINK_START := 30.0
+const SHRINK_INTERVAL := 8.0
 
-enum Cell { EMPTY, WALL, CRATE }
+enum Cell { EMPTY, WALL, CRATE, IRON_CRATE, SHRINK_WALL }
+enum Floor { NORMAL, ICE, MUD }
 enum Phase { PLAYING, P1_WIN, P2_WIN, DRAW }
 enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE, SHIELD, SLOW_CURSE }
 
@@ -32,6 +37,8 @@ class PlayerData:
 	var has_remote: bool = false
 	var shield: int = 0
 	var slow_timer: float = 0.0
+	var last_dir: Vector2i = Vector2i.ZERO
+	var portal_cd: float = 0.0
 	var last_bomb: Vector2i = Vector2i(999999, 999999)
 	var moving: bool = false
 	var target_gx: float = 0.0
@@ -57,6 +64,8 @@ class PlayerData:
 		has_remote = false
 		shield = 0
 		slow_timer = 0.0
+		last_dir = Vector2i.ZERO
+		portal_cd = 0.0
 		last_bomb = Vector2i(999999, 999999)
 		moving = false
 
@@ -101,34 +110,31 @@ class ExplData:
 	var gx: int
 	var gy: int
 	var ttl: float
-
 	func _init(x: int, y: int, t: float) -> void:
-		gx = x
-		gy = y
-		ttl = t
+		gx = x; gy = y; ttl = t
 
 
 class PickupData:
 	var gx: int
 	var gy: int
 	var kind: int
-
 	func _init(x: int, y: int, k: int) -> void:
-		gx = x
-		gy = y
-		kind = k
+		gx = x; gy = y; kind = k
 
 
-# ── 每帧事件队列（view 层读取后清空，避免 signal 依赖）──
+# ── 事件队列 ─────────────────────────────
 
-enum Event { BOMB_PLACED, EXPLOSION, PICKUP_COLLECTED, PHASE_END, BOMB_KICKED, REMOTE_DETONATE, SHIELD_BREAK }
+enum Event {
+	BOMB_PLACED, EXPLOSION, PICKUP_COLLECTED, PHASE_END,
+	BOMB_KICKED, REMOTE_DETONATE, SHIELD_BREAK,
+	TELEPORT, SHRINK_ADVANCE, IRON_HIT, IRON_BREAK,
+}
 
 class GameEvent:
 	var type: int
 	var data: Dictionary
 	func _init(t: int, d: Dictionary = {}) -> void:
-		type = t
-		data = d
+		type = t; data = d
 
 var events: Array = []
 
@@ -137,12 +143,18 @@ var events: Array = []
 
 var rng := RandomNumberGenerator.new()
 var grid: Array = []
+var floor_grid: Array = []
 var p1: PlayerData
 var p2: PlayerData
 var bombs: Array = []
 var explosions: Array = []
 var pickups: Array = []
+var portals: Array = []
+var iron_hp: Dictionary = {}
 var phase: int = Phase.PLAYING
+var shrink_enabled: bool = false
+var shrink_timer: float = 0.0
+var shrink_ring: int = 0
 var _map: Dictionary = {}
 
 
@@ -162,6 +174,11 @@ func reset(map: Dictionary = {}) -> void:
 	explosions.clear()
 	pickups.clear()
 	events.clear()
+	portals.clear()
+	iron_hp.clear()
+	shrink_timer = 0.0
+	shrink_ring = 0
+	shrink_enabled = _map.get("shrink", false)
 	_build_grid()
 	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(COLS - 2, ROWS - 2)])
 	if spawns.size() >= 1:
@@ -178,10 +195,15 @@ func reset(map: Dictionary = {}) -> void:
 
 func _build_grid() -> void:
 	grid.clear()
+	floor_grid.clear()
 	for x in range(COLS):
 		var col: Array = []
 		col.resize(ROWS)
 		grid.append(col)
+		var fcol: Array = []
+		fcol.resize(ROWS)
+		fcol.fill(Floor.NORMAL)
+		floor_grid.append(fcol)
 	var template: Array = _map.get("template", [])
 	var density: float = _map.get("crate_density", 0.52)
 	if template.size() == ROWS:
@@ -192,17 +214,38 @@ func _build_grid() -> void:
 
 
 func _build_from_template(template: Array, density: float) -> void:
+	var pending_portals: Array[Vector2i] = []
 	for x in range(COLS):
 		for y in range(ROWS):
 			var row: String = template[y]
-			if x < row.length() and row[x] == "#":
-				grid[x][y] = Cell.WALL
-			else:
-				grid[x][y] = Cell.EMPTY
+			var ch := row[x] if x < row.length() else "."
+			match ch:
+				"#":
+					grid[x][y] = Cell.WALL
+				"I":
+					grid[x][y] = Cell.IRON_CRATE
+					iron_hp[Vector2i(x, y)] = 2
+				"~":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.ICE
+				"%":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.MUD
+				"T":
+					grid[x][y] = Cell.EMPTY
+					pending_portals.append(Vector2i(x, y))
+				_:
+					grid[x][y] = Cell.EMPTY
+	for i in range(0, pending_portals.size() - 1, 2):
+		portals.append([pending_portals[i], pending_portals[i + 1]])
 	var spawns: Array = _map.get("spawns", [])
 	for x in range(1, COLS - 1):
 		for y in range(1, ROWS - 1):
 			if grid[x][y] != Cell.EMPTY:
+				continue
+			if floor_grid[x][y] != Floor.NORMAL:
+				continue
+			if _is_portal_cell(x, y):
 				continue
 			if _is_near_any_spawn(x, y, spawns):
 				continue
@@ -242,6 +285,15 @@ func _is_near_any_spawn(x: int, y: int, spawns: Array) -> bool:
 	return false
 
 
+func _is_portal_cell(x: int, y: int) -> bool:
+	for pair in portals:
+		var a: Vector2i = pair[0]
+		var b: Vector2i = pair[1]
+		if (a.x == x and a.y == y) or (b.x == x and b.y == y):
+			return true
+	return false
+
+
 func _carve_reachable_crates() -> void:
 	var reach: Dictionary = {}
 	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(COLS - 2, ROWS - 2)])
@@ -274,6 +326,23 @@ func _bfs_reachable(sx: int, sy: int, reach: Dictionary) -> void:
 				q.append(n)
 
 
+func floor_at(gx: int, gy: int) -> int:
+	if gx < 0 or gy < 0 or gx >= COLS or gy >= ROWS:
+		return Floor.NORMAL
+	return floor_grid[gx][gy]
+
+
+func portal_dest(gx: int, gy: int) -> Vector2i:
+	for pair in portals:
+		var a: Vector2i = pair[0]
+		var b: Vector2i = pair[1]
+		if a.x == gx and a.y == gy:
+			return b
+		if b.x == gx and b.y == gy:
+			return a
+	return Vector2i(-1, -1)
+
+
 # ── 玩家 ─────────────────────────────────
 
 func try_start_move(pl: PlayerData, dx: int, dy: int) -> bool:
@@ -296,6 +365,7 @@ func try_start_move(pl: PlayerData, dx: int, dy: int) -> bool:
 	pl.target_gx = float(tx)
 	pl.target_gy = float(ty)
 	pl.moving = true
+	pl.last_dir = Vector2i(dx, dy)
 	pl.last_bomb = Vector2i(999999, 999999)
 	return true
 
@@ -305,18 +375,45 @@ func player_move_tick(pl: PlayerData, dt: float) -> void:
 		return
 	if pl.slow_timer > 0.0:
 		pl.slow_timer = maxf(pl.slow_timer - dt, 0.0)
+	if pl.portal_cd > 0.0:
+		pl.portal_cd = maxf(pl.portal_cd - dt, 0.0)
 	if pl.moving:
 		var dx := pl.target_gx - pl.gx
 		var dy := pl.target_gy - pl.gy
 		var len := sqrt(dx * dx + dy * dy)
-		var step := pl.move_speed() * dt
+		var spd := pl.move_speed()
+		var cur_gx := int(roundf(pl.gx))
+		var cur_gy := int(roundf(pl.gy))
+		if floor_at(cur_gx, cur_gy) == Floor.MUD:
+			spd *= MUD_FACTOR
+		var step := spd * dt
 		if len <= 0.0001 or step >= len:
 			pl.gx = pl.target_gx
 			pl.gy = pl.target_gy
 			pl.moving = false
+			var igx := int(roundf(pl.gx))
+			var igy := int(roundf(pl.gy))
+			if floor_at(igx, igy) == Floor.ICE and pl.last_dir != Vector2i.ZERO:
+				var nx := igx + pl.last_dir.x
+				var ny := igy + pl.last_dir.y
+				if walkable_for(nx, ny, pl):
+					pl.target_gx = float(nx)
+					pl.target_gy = float(ny)
+					pl.moving = true
 		else:
 			pl.gx += dx / len * step
 			pl.gy += dy / len * step
+	if not pl.moving and pl.aligned() and pl.portal_cd <= 0.0:
+		var igx := int(roundf(pl.gx))
+		var igy := int(roundf(pl.gy))
+		var dest := portal_dest(igx, igy)
+		if dest.x >= 0:
+			pl.gx = float(dest.x)
+			pl.gy = float(dest.y)
+			pl.target_gx = pl.gx
+			pl.target_gy = pl.gy
+			pl.portal_cd = PORTAL_COOLDOWN
+			events.append(GameEvent.new(Event.TELEPORT, {"pid": pl.pid}))
 	var igx := int(roundf(pl.gx))
 	var igy := int(roundf(pl.gy))
 	if bomb_at(igx, igy) == null:
@@ -480,12 +577,15 @@ func _spread_blast(ox: int, oy: int, dx: int, dy: int, range_i: int, q: Array) -
 		if x < 0 or y < 0 or x >= COLS or y >= ROWS:
 			break
 		var c: int = grid[x][y]
-		if c == Cell.WALL:
+		if c == Cell.WALL or c == Cell.SHRINK_WALL:
 			break
 		var stop := _blast_cell(x, y, q)
 		if c == Cell.CRATE:
 			grid[x][y] = Cell.EMPTY
 			_maybe_drop_pickup(x, y)
+			break
+		if c == Cell.IRON_CRATE:
+			_damage_iron_crate(x, y)
 			break
 		if stop:
 			break
@@ -503,7 +603,21 @@ func _blast_cell(x: int, y: int, q: Array) -> bool:
 			q.append(other)
 		return true
 	var c: int = grid[x][y]
-	return c == Cell.WALL or c == Cell.CRATE
+	return c != Cell.EMPTY
+
+
+func _damage_iron_crate(x: int, y: int) -> void:
+	var pos := Vector2i(x, y)
+	if not iron_hp.has(pos):
+		return
+	iron_hp[pos] -= 1
+	if iron_hp[pos] <= 0:
+		iron_hp.erase(pos)
+		grid[x][y] = Cell.EMPTY
+		_maybe_drop_pickup(x, y)
+		events.append(GameEvent.new(Event.IRON_BREAK, {"gx": x, "gy": y}))
+	else:
+		events.append(GameEvent.new(Event.IRON_HIT, {"gx": x, "gy": y}))
 
 
 func _damage_at(x: int, y: int) -> void:
@@ -531,6 +645,54 @@ func tick_explosions(dt: float) -> void:
 		e.ttl -= dt
 		if e.ttl <= 0.0:
 			explosions.remove_at(i)
+
+
+# ── 缩圈 ─────────────────────────────────
+
+func tick_shrink(dt: float) -> void:
+	if not shrink_enabled or phase != Phase.PLAYING:
+		return
+	shrink_timer += dt
+	if shrink_timer < SHRINK_START:
+		return
+	var max_ring := mini(COLS, ROWS) / 2 - 1
+	var target := mini(int((shrink_timer - SHRINK_START) / SHRINK_INTERVAL) + 1, max_ring)
+	while shrink_ring < target:
+		shrink_ring += 1
+		_apply_shrink_ring(shrink_ring)
+
+
+func _apply_shrink_ring(ring: int) -> void:
+	for x in range(COLS):
+		for y in range(ROWS):
+			if x != ring and x != COLS - 1 - ring and y != ring and y != ROWS - 1 - ring:
+				continue
+			if grid[x][y] == Cell.WALL or grid[x][y] == Cell.SHRINK_WALL:
+				continue
+			grid[x][y] = Cell.SHRINK_WALL
+			floor_grid[x][y] = Floor.NORMAL
+			iron_hp.erase(Vector2i(x, y))
+			_destroy_pickups_at(x, y)
+			_destroy_bombs_at(x, y)
+			_damage_at(x, y)
+	_remove_dead_portals()
+	events.append(GameEvent.new(Event.SHRINK_ADVANCE, {"ring": ring}))
+
+
+func _destroy_bombs_at(x: int, y: int) -> void:
+	for i in range(bombs.size() - 1, -1, -1):
+		var bd: BombData = bombs[i]
+		if bd.gx == x and bd.gy == y:
+			bombs.remove_at(i)
+
+
+func _remove_dead_portals() -> void:
+	for i in range(portals.size() - 1, -1, -1):
+		var pair: Array = portals[i]
+		var a: Vector2i = pair[0]
+		var b: Vector2i = pair[1]
+		if grid[a.x][a.y] != Cell.EMPTY or grid[b.x][b.y] != Cell.EMPTY:
+			portals.remove_at(i)
 
 
 # ── 道具 ─────────────────────────────────

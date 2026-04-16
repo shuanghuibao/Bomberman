@@ -44,6 +44,12 @@ func run() -> void:
 	test_shield_absorbs_explosion()
 	test_slow_curse_wears_off()
 	test_map_template()
+	test_iron_crate_two_hits()
+	test_ice_slide()
+	test_mud_slows_movement()
+	test_portal_teleport()
+	test_shrink_zone()
+	test_floor_grid_dimensions()
 	print("  done.\n")
 
 
@@ -426,10 +432,115 @@ func test_slow_curse_wears_off() -> void:
 func test_map_template() -> void:
 	T.begin("map_template")
 	var gl := GameLogic.new(42)
-	var arena := MapDefs.get_presets()[1]
+	var arena: Dictionary = MapDefs.get_presets()[1]
 	gl.reset(arena)
 	T.assert_eq(gl.grid.size(), GameLogic.COLS, "cols")
 	T.assert_eq(gl.grid[0].size(), GameLogic.ROWS, "rows")
 	T.assert_eq(gl.grid[2][2], GameLogic.Cell.WALL, "arena wall (2,2)")
 	T.assert_eq(gl.grid[3][2], GameLogic.Cell.WALL, "arena wall (3,2)")
 	T.assert_eq(gl.grid[7][5], GameLogic.Cell.EMPTY, "arena center empty")
+
+
+# ── 铁箱 ─────────────────────────────────
+
+func test_iron_crate_two_hits() -> void:
+	T.begin("iron_crate_two_hits")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.grid[2][1] = GameLogic.Cell.IRON_CRATE
+	gl.iron_hp[Vector2i(2, 1)] = 2
+	gl.try_place_bomb(gl.p1)
+	gl.p1.gx = 1.0; gl.p1.gy = 3.0; gl.p1.moving = false
+	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
+	T.assert_eq(gl.grid[2][1], GameLogic.Cell.IRON_CRATE, "still iron after first hit")
+	T.assert_eq(gl.iron_hp.get(Vector2i(2, 1), 0), 1, "hp reduced to 1")
+	gl.p1.gx = 1.0; gl.p1.gy = 1.0; gl.p1.moving = false
+	gl.try_place_bomb(gl.p1)
+	gl.p1.gx = 1.0; gl.p1.gy = 3.0; gl.p1.moving = false
+	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
+	T.assert_eq(gl.grid[2][1], GameLogic.Cell.EMPTY, "destroyed after second hit")
+	T.assert_false(gl.iron_hp.has(Vector2i(2, 1)), "hp entry removed")
+
+
+# ── 冰面 ─────────────────────────────────
+
+func test_ice_slide() -> void:
+	T.begin("ice_slide")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 6)
+	gl.floor_grid[2][1] = GameLogic.Floor.ICE
+	gl.floor_grid[3][1] = GameLogic.Floor.ICE
+	gl.try_start_move(gl.p1, 1, 0)
+	for i in range(300):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		if gl.p1.aligned() and not gl.p1.moving:
+			break
+	T.assert_eq(gl.p1.gx, 4.0, "slid through ice to non-ice cell")
+	T.assert_eq(gl.p1.gy, 1.0, "y unchanged")
+
+
+# ── 泥地 ─────────────────────────────────
+
+func test_mud_slows_movement() -> void:
+	T.begin("mud_slows_movement")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.try_start_move(gl.p1, 1, 0)
+	var normal_frames := 0
+	for i in range(200):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		normal_frames += 1
+		if gl.p1.aligned():
+			break
+	gl.p1.gx = 1.0; gl.p1.gy = 1.0; gl.p1.target_gx = 1.0; gl.p1.target_gy = 1.0; gl.p1.moving = false
+	gl.floor_grid[1][1] = GameLogic.Floor.MUD
+	gl.floor_grid[2][1] = GameLogic.Floor.MUD
+	gl.try_start_move(gl.p1, 1, 0)
+	var mud_frames := 0
+	for i in range(400):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		mud_frames += 1
+		if gl.p1.aligned():
+			break
+	T.assert_true(mud_frames > normal_frames, "mud slowed movement")
+
+
+# ── 传送门 ───────────────────────────────
+
+func test_portal_teleport() -> void:
+	T.begin("portal_teleport")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	_clear_around(gl, 5, 5, 3)
+	gl.portals.append([Vector2i(2, 1), Vector2i(5, 5)])
+	gl.try_start_move(gl.p1, 1, 0)
+	for i in range(300):
+		gl.player_move_tick(gl.p1, 1.0 / 60.0)
+		if gl.p1.aligned() and not gl.p1.moving:
+			break
+	T.assert_eq(gl.p1.gx, 5.0, "teleported x")
+	T.assert_eq(gl.p1.gy, 5.0, "teleported y")
+	T.assert_true(gl.p1.portal_cd > 0.0, "cooldown active")
+
+
+# ── 缩圈 ─────────────────────────────────
+
+func test_shrink_zone() -> void:
+	T.begin("shrink_zone")
+	var gl := _make()
+	gl.p1.gx = 5.0; gl.p1.gy = 5.0; gl.p1.target_gx = 5.0; gl.p1.target_gy = 5.0; gl.p1.moving = false
+	gl.p2.gx = 7.0; gl.p2.gy = 5.0; gl.p2.target_gx = 7.0; gl.p2.target_gy = 5.0; gl.p2.moving = false
+	gl.shrink_enabled = true
+	gl.shrink_timer = GameLogic.SHRINK_START + 0.1
+	gl.tick_shrink(0.0)
+	T.assert_eq(gl.shrink_ring, 1, "first ring shrunk")
+	T.assert_eq(gl.grid[1][1], GameLogic.Cell.SHRINK_WALL, "corner became shrink wall")
+	T.assert_true(gl.p1.alive, "p1 safe in center")
+	T.assert_true(gl.p2.alive, "p2 safe in center")
+
+
+func test_floor_grid_dimensions() -> void:
+	T.begin("floor_grid_dimensions")
+	var gl := _make()
+	T.assert_eq(gl.floor_grid.size(), GameLogic.COLS, "floor cols")
+	T.assert_eq(gl.floor_grid[0].size(), GameLogic.ROWS, "floor rows")

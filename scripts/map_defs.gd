@@ -1,7 +1,7 @@
 class_name MapDefs
 extends RefCounted
 
-## 地图定义（3 张预设 + JSON 自定义加载）
+## 地图定义（5 张预设 + JSON 自定义加载）
 
 const COLS := 15
 const ROWS := 11
@@ -19,7 +19,7 @@ static func get_all_maps() -> Array:
 
 
 static func get_presets() -> Array:
-	return [_classic(), _arena(), _maze()]
+	return [_classic(), _arena(), _maze(), _ice_mud(), _portal()]
 
 
 static func _classic() -> Dictionary:
@@ -45,7 +45,7 @@ static func _classic() -> Dictionary:
 
 static func _arena() -> Dictionary:
 	return {
-		"name": "竞技场",
+		"name": "竞技场（缩圈）",
 		"template": [
 			"###############",
 			"#.............#",
@@ -61,6 +61,7 @@ static func _arena() -> Dictionary:
 		],
 		"spawns": DEFAULT_SPAWNS.duplicate(),
 		"crate_density": 0.45,
+		"shrink": true,
 	}
 
 
@@ -82,6 +83,48 @@ static func _maze() -> Dictionary:
 		],
 		"spawns": DEFAULT_SPAWNS.duplicate(),
 		"crate_density": 0.40,
+	}
+
+
+static func _ice_mud() -> Dictionary:
+	return {
+		"name": "冰火地带",
+		"template": [
+			"###############",
+			"#.............#",
+			"#.#.#.#.#.#.#.#",
+			"#..#~#.#%#.#..#",
+			"#.#.#.#.#.#.#.#",
+			"#.~~..#..%%...#",
+			"#.#.#.#.#.#.#.#",
+			"#..#%#.#~#.#..#",
+			"#.#.#.#.#.#.#.#",
+			"#.............#",
+			"###############",
+		],
+		"spawns": DEFAULT_SPAWNS.duplicate(),
+		"crate_density": 0.42,
+	}
+
+
+static func _portal() -> Dictionary:
+	return {
+		"name": "传送铁壁",
+		"template": [
+			"###############",
+			"#T............#",
+			"#.#I#.#.#I#.#.#",
+			"#.#.....#...#.#",
+			"#.#.###.#.###.#",
+			"#...#..T..#...#",
+			"#.###.T.###.#.#",
+			"#.#...#.....#.#",
+			"#.#I#.#.#I#.#.#",
+			"#............T#",
+			"###############",
+		],
+		"spawns": DEFAULT_SPAWNS.duplicate(),
+		"crate_density": 0.38,
 	}
 
 
@@ -147,4 +190,5 @@ static func _parse_json_file(path: String) -> Dictionary:
 		"template": template,
 		"spawns": spawns,
 		"crate_density": float(d.get("crate_density", 0.5)),
+		"shrink": bool(d.get("shrink", false)),
 	}

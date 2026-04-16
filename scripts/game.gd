@@ -172,6 +172,7 @@ func _process(delta: float) -> void:
 
 	logic.tick_moving_bombs(delta)
 	logic.tick_bombs(delta)
+	logic.tick_shrink(delta)
 	_resolve_phase_extended()
 
 	_handle_events()
@@ -239,6 +240,9 @@ func _damage_npc_players() -> void:
 			continue
 		var gx := int(roundf(p.gx))
 		var gy := int(roundf(p.gy))
+		if logic.grid[gx][gy] == GameLogic.Cell.SHRINK_WALL:
+			logic.try_kill_player(p)
+			continue
 		for e in logic.explosions:
 			var ex: GameLogic.ExplData = e
 			if ex.gx == gx and ex.gy == gy:
@@ -270,6 +274,19 @@ func _handle_events() -> void:
 				var sw := "P1" if e.data.get("pid", 0) == 0 else ("NPC" if e.data.get("pid", 0) >= 10 else "P2")
 				_toasts.append(ToastItem.new("%s 的护盾抵挡了一次爆炸！" % sw, CLR_PICKUP_SHIELD, TOAST_TTL))
 				_sync_toast_ui()
+			GameLogic.Event.TELEPORT:
+				_sfx.play_teleport()
+				var tw := "P1" if e.data.get("pid", 0) == 0 else ("NPC" if e.data.get("pid", 0) >= 10 else "P2")
+				_toasts.append(ToastItem.new("%s 传送！" % tw, Color(0.6, 0.4, 1.0), TOAST_TTL))
+				_sync_toast_ui()
+			GameLogic.Event.SHRINK_ADVANCE:
+				_sfx.play_shrink()
+				_toasts.append(ToastItem.new("毒圈缩进第 %d 圈！" % e.data.get("ring", 0), Color(0.9, 0.2, 0.2), TOAST_TTL))
+				_sync_toast_ui()
+			GameLogic.Event.IRON_HIT:
+				_sfx.play_iron_hit()
+			GameLogic.Event.IRON_BREAK:
+				_sfx.play_explosion()
 			GameLogic.Event.PHASE_END:
 				_show_result()
 				var p: int = e.data.get("phase", 0)
@@ -389,7 +406,16 @@ func _refresh_ui() -> void:
 		var p2s := "P2 %s" % _player_stat_str(logic.p2)
 		_lbl_hint.text = "%s  |  %s  |  WASD/空格  方向键/回车  R重开  Esc暂停" % [p1s, p2s]
 	if logic.phase == GameLogic.Phase.PLAYING:
-		_lbl_phase.text = "对局进行中" if not match_paused else "已暂停"
+		if match_paused:
+			_lbl_phase.text = "已暂停"
+		elif logic.shrink_enabled:
+			var remaining := maxf(GameLogic.SHRINK_START - logic.shrink_timer, 0.0)
+			if remaining > 0.0:
+				_lbl_phase.text = "毒圈倒计时 %.0fs" % remaining
+			else:
+				_lbl_phase.text = "毒圈 第%d圈" % logic.shrink_ring
+		else:
+			_lbl_phase.text = "对局进行中"
 	else:
 		_lbl_phase.text = "本局结束"
 
@@ -432,11 +458,46 @@ func _draw() -> void:
 				col = Color(0.22, 0.24, 0.30)
 			elif c == GameLogic.Cell.CRATE:
 				col = Color(0.78, 0.52, 0.28)
+			elif c == GameLogic.Cell.IRON_CRATE:
+				var hp: int = L.iron_hp.get(Vector2i(x, y), 2)
+				col = Color(0.50, 0.52, 0.58) if hp >= 2 else Color(0.62, 0.40, 0.35)
+			elif c == GameLogic.Cell.SHRINK_WALL:
+				col = Color(0.65, 0.12, 0.15)
 			else:
-				col = Color(0.12, 0.13, 0.16)
+				var fl: int = L.floor_grid[x][y]
+				if fl == GameLogic.Floor.ICE:
+					col = Color(0.18, 0.32, 0.50)
+				elif fl == GameLogic.Floor.MUD:
+					col = Color(0.22, 0.17, 0.10)
+				else:
+					col = Color(0.12, 0.13, 0.16)
 			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, ts), col)
+			if c == GameLogic.Cell.IRON_CRATE:
+				var cx := o.x + x * ts + ts * 0.5
+				var cy := o.y + y * ts + ts * 0.5
+				var bar := ts * 0.06
+				draw_rect(Rect2(cx - ts * 0.25, cy - bar, ts * 0.5, bar * 2.0), Color(0.3, 0.3, 0.35))
+				draw_rect(Rect2(cx - bar, cy - ts * 0.25, bar * 2.0, ts * 0.5), Color(0.3, 0.3, 0.35))
+			elif c == GameLogic.Cell.EMPTY:
+				var fl: int = L.floor_grid[x][y]
+				if fl == GameLogic.Floor.ICE:
+					var d := ts * 0.08
+					var bx := o.x + x * ts
+					var by := o.y + y * ts
+					draw_rect(Rect2(bx + ts * 0.3, by + ts * 0.3, d, d), Color(0.35, 0.55, 0.75, 0.4))
+					draw_rect(Rect2(bx + ts * 0.6, by + ts * 0.6, d, d), Color(0.35, 0.55, 0.75, 0.4))
+				elif fl == GameLogic.Floor.MUD:
+					var d := ts * 0.07
+					var bx := o.x + x * ts
+					var by := o.y + y * ts
+					draw_rect(Rect2(bx + ts * 0.25, by + ts * 0.4, d, d), Color(0.14, 0.11, 0.06, 0.5))
+					draw_rect(Rect2(bx + ts * 0.55, by + ts * 0.25, d, d), Color(0.14, 0.11, 0.06, 0.5))
+					draw_rect(Rect2(bx + ts * 0.45, by + ts * 0.65, d, d), Color(0.14, 0.11, 0.06, 0.5))
 			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, 1.2), Color(0, 0, 0, 0.18))
 			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, 1.2, ts), Color(0, 0, 0, 0.18))
+
+	for pair in L.portals:
+		_draw_portal(pair, o, ts)
 
 	for p in L.pickups:
 		var pd: GameLogic.PickupData = p
@@ -461,6 +522,23 @@ func _draw() -> void:
 			_draw_player(npc_players[i], NPC_COLORS[i % NPC_COLORS.size()])
 	else:
 		_draw_player(L.p2, Color(1.0, 0.52, 0.38))
+
+
+func _draw_portal(pair: Array, o: Vector2, ts: float) -> void:
+	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.005)
+	var portal_col := Color(0.55, 0.30, 0.95).lerp(Color(0.80, 0.55, 1.0), pulse)
+	for pos in pair:
+		var p: Vector2i = pos
+		var m := ts * 0.30
+		draw_rect(
+			Rect2(o.x + p.x * ts + m, o.y + p.y * ts + m, ts - m * 2.0, ts - m * 2.0),
+			portal_col
+		)
+		var m2 := ts * 0.40
+		draw_rect(
+			Rect2(o.x + p.x * ts + m2, o.y + p.y * ts + m2, ts - m2 * 2.0, ts - m2 * 2.0),
+			Color(0.95, 0.85, 1.0, 0.6)
+		)
 
 
 func _draw_bomb(bd: GameLogic.BombData, o: Vector2, ts: float) -> void:
