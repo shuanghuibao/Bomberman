@@ -49,6 +49,14 @@ func play_lose() -> void:
 	_play_tone(262.0, 0.18, -8.0)
 
 
+func play_kick() -> void:
+	_play_tone(350.0, 0.05, -7.0)
+
+
+func play_detonate() -> void:
+	_play_tone(520.0, 0.04, -6.0)
+
+
 func _play_tone(freq: float, dur: float, vol_db: float) -> void:
 	var sample_rate := 22050
 	var frames := int(dur * sample_rate)

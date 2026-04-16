@@ -11,10 +11,11 @@ const SPEED_PER_SHOE := 1.2
 const BOMB_FUSE := 2.4
 const EXPLOSION_TTL := 0.45
 const DROP_CHANCE := 0.55
+const BOMB_SLIDE_INTERVAL := 0.06
 
 enum Cell { EMPTY, WALL, CRATE }
 enum Phase { PLAYING, P1_WIN, P2_WIN, DRAW }
-enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP }
+enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE }
 
 
 class PlayerData:
@@ -25,6 +26,8 @@ class PlayerData:
 	var max_bombs: int = 1
 	var range_i: int = 1
 	var speed_ups: int = 0
+	var has_kick: bool = false
+	var has_remote: bool = false
 	var last_bomb: Vector2i = Vector2i(999999, 999999)
 	var moving: bool = false
 	var target_gx: float = 0.0
@@ -46,6 +49,8 @@ class PlayerData:
 		max_bombs = 1
 		range_i = 1
 		speed_ups = 0
+		has_kick = false
+		has_remote = false
 		last_bomb = Vector2i(999999, 999999)
 		moving = false
 
@@ -70,6 +75,10 @@ class BombData:
 	var owner_id: int
 	var time: float
 	var range_i: int
+	var is_remote: bool = false
+	var moving: bool = false
+	var move_dir: Vector2i = Vector2i.ZERO
+	var move_timer: float = 0.0
 
 	func _init(p_gx: int, p_gy: int, oid: int, fuse: float, rng: int) -> void:
 		gx = p_gx
@@ -103,7 +112,7 @@ class PickupData:
 
 # ── 每帧事件队列（view 层读取后清空，避免 signal 依赖）──
 
-enum Event { BOMB_PLACED, EXPLOSION, PICKUP_COLLECTED, PHASE_END }
+enum Event { BOMB_PLACED, EXPLOSION, PICKUP_COLLECTED, PHASE_END, BOMB_KICKED, REMOTE_DETONATE }
 
 class GameEvent:
 	var type: int
@@ -125,6 +134,7 @@ var bombs: Array = []
 var explosions: Array = []
 var pickups: Array = []
 var phase: int = Phase.PLAYING
+var _map: Dictionary = {}
 
 
 func _init(seed_value: int = -1) -> void:
@@ -136,14 +146,23 @@ func _init(seed_value: int = -1) -> void:
 	p2 = PlayerData.new(1, COLS - 2, ROWS - 2)
 
 
-func reset() -> void:
+func reset(map: Dictionary = {}) -> void:
+	_map = map
 	phase = Phase.PLAYING
 	bombs.clear()
 	explosions.clear()
 	pickups.clear()
+	events.clear()
 	_build_grid()
-	p1.reset(1, 1)
-	p2.reset(COLS - 2, ROWS - 2)
+	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(COLS - 2, ROWS - 2)])
+	if spawns.size() >= 1:
+		p1.reset(spawns[0].x, spawns[0].y)
+	else:
+		p1.reset(1, 1)
+	if spawns.size() >= 2:
+		p2.reset(spawns[1].x, spawns[1].y)
+	else:
+		p2.reset(COLS - 2, ROWS - 2)
 
 
 # ── 网格生成 ──────────────────────────────
@@ -154,6 +173,35 @@ func _build_grid() -> void:
 		var col: Array = []
 		col.resize(ROWS)
 		grid.append(col)
+	var template: Array = _map.get("template", [])
+	var density: float = _map.get("crate_density", 0.52)
+	if template.size() == ROWS:
+		_build_from_template(template, density)
+	else:
+		_build_default_grid(density)
+	_carve_reachable_crates()
+
+
+func _build_from_template(template: Array, density: float) -> void:
+	for x in range(COLS):
+		for y in range(ROWS):
+			var row: String = template[y]
+			if x < row.length() and row[x] == "#":
+				grid[x][y] = Cell.WALL
+			else:
+				grid[x][y] = Cell.EMPTY
+	var spawns: Array = _map.get("spawns", [])
+	for x in range(1, COLS - 1):
+		for y in range(1, ROWS - 1):
+			if grid[x][y] != Cell.EMPTY:
+				continue
+			if _is_near_any_spawn(x, y, spawns):
+				continue
+			if rng.randf() < density:
+				grid[x][y] = Cell.CRATE
+
+
+func _build_default_grid(density: float) -> void:
 	for x in range(COLS):
 		for y in range(ROWS):
 			var border := x == 0 or y == 0 or x == COLS - 1 or y == ROWS - 1
@@ -169,19 +217,29 @@ func _build_grid() -> void:
 				continue
 			if _is_spawn_zone(x, y):
 				continue
-			if rng.randf() < 0.52:
+			if rng.randf() < density:
 				grid[x][y] = Cell.CRATE
-	_carve_reachable_crates()
 
 
 func _is_spawn_zone(x: int, y: int) -> bool:
 	return (x <= 2 and y <= 2) or (x >= COLS - 3 and y >= ROWS - 3)
 
 
+func _is_near_any_spawn(x: int, y: int, spawns: Array) -> bool:
+	for s in spawns:
+		var sp: Vector2i = s
+		if absi(x - sp.x) <= 1 and absi(y - sp.y) <= 1:
+			return true
+	return false
+
+
 func _carve_reachable_crates() -> void:
 	var reach: Dictionary = {}
-	_bfs_reachable(1, 1, reach)
-	_bfs_reachable(COLS - 2, ROWS - 2, reach)
+	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(COLS - 2, ROWS - 2)])
+	for s in spawns:
+		var sp: Vector2i = s
+		if sp.x > 0 and sp.x < COLS and sp.y > 0 and sp.y < ROWS:
+			_bfs_reachable(sp.x, sp.y, reach)
 	for x in range(1, COLS - 1):
 		for y in range(1, ROWS - 1):
 			if grid[x][y] == Cell.CRATE and not reach.has(Vector2i(x, y)):
@@ -219,6 +277,10 @@ func try_start_move(pl: PlayerData, dx: int, dy: int) -> bool:
 	var tx := sx + dx
 	var ty := sy + dy
 	if not walkable_for(tx, ty, pl):
+		if pl.has_kick:
+			var b: BombData = bomb_at(tx, ty)
+			if b != null and not b.moving:
+				_kick_bomb(b, Vector2i(dx, dy))
 		return false
 	pl.gx = float(sx)
 	pl.gy = float(sy)
@@ -290,12 +352,32 @@ func try_place_bomb(pl: PlayerData) -> void:
 	var gx := int(roundf(pl.gx))
 	var gy := int(roundf(pl.gy))
 	if bomb_at(gx, gy) != null:
+		if pl.has_remote:
+			_detonate_remote(pl)
 		return
 	if _active_bombs_for(pl.pid) >= pl.max_bombs:
+		if pl.has_remote:
+			_detonate_remote(pl)
 		return
-	bombs.append(BombData.new(gx, gy, pl.pid, BOMB_FUSE, pl.range_i))
+	var bd := BombData.new(gx, gy, pl.pid, BOMB_FUSE, pl.range_i)
+	if pl.has_remote:
+		bd.is_remote = true
+		bd.time = 9999.0
+	bombs.append(bd)
 	pl.note_placed_bomb(gx, gy)
 	events.append(GameEvent.new(Event.BOMB_PLACED, {"pid": pl.pid}))
+
+
+func _detonate_remote(pl: PlayerData) -> void:
+	var found := false
+	for b_item in bombs:
+		var b: BombData = b_item
+		if b.owner_id == pl.pid and b.is_remote:
+			b.time = 0.0
+			b.moving = false
+			found = true
+	if found:
+		events.append(GameEvent.new(Event.REMOTE_DETONATE, {"pid": pl.pid}))
 
 
 func _active_bombs_for(pid: int) -> int:
@@ -305,6 +387,42 @@ func _active_bombs_for(pid: int) -> int:
 		if bd.owner_id == pid:
 			n += 1
 	return n
+
+
+func _kick_bomb(b: BombData, dir: Vector2i) -> void:
+	b.moving = true
+	b.move_dir = dir
+	b.move_timer = BOMB_SLIDE_INTERVAL
+	events.append(GameEvent.new(Event.BOMB_KICKED, {"gx": b.gx, "gy": b.gy}))
+
+
+func tick_moving_bombs(dt: float) -> void:
+	for b_item in bombs:
+		var b: BombData = b_item
+		if not b.moving:
+			continue
+		b.move_timer -= dt
+		if b.move_timer > 0.0:
+			continue
+		b.move_timer += BOMB_SLIDE_INTERVAL
+		var nx: int = b.gx + b.move_dir.x
+		var ny: int = b.gy + b.move_dir.y
+		if _bomb_slide_blocked(nx, ny):
+			b.moving = false
+			b.move_dir = Vector2i.ZERO
+		else:
+			b.gx = nx
+			b.gy = ny
+
+
+func _bomb_slide_blocked(gx: int, gy: int) -> bool:
+	if gx < 0 or gy < 0 or gx >= COLS or gy >= ROWS:
+		return true
+	if grid[gx][gy] != Cell.EMPTY:
+		return true
+	if bomb_at(gx, gy) != null:
+		return true
+	return false
 
 
 func tick_bombs(dt: float) -> void:
@@ -370,6 +488,7 @@ func _blast_cell(x: int, y: int, q: Array) -> bool:
 	if other != null:
 		if other.time > 0.0:
 			other.time = 0.0
+			other.moving = false
 			q.append(other)
 		return true
 	var c: int = grid[x][y]
@@ -400,12 +519,16 @@ func _maybe_drop_pickup(x: int, y: int) -> void:
 		return
 	var roll := rng.randf()
 	var kind: int
-	if roll < 0.38:
+	if roll < 0.28:
 		kind = Pickup.BOMB_UP
-	elif roll < 0.72:
+	elif roll < 0.52:
 		kind = Pickup.FIRE_UP
-	else:
+	elif roll < 0.72:
 		kind = Pickup.SPEED_UP
+	elif roll < 0.86:
+		kind = Pickup.KICK
+	else:
+		kind = Pickup.REMOTE
 	pickups.append(PickupData.new(x, y, kind))
 
 
@@ -430,6 +553,10 @@ func try_collect_pickup(pl: PlayerData) -> void:
 			pl.range_i = mini(pl.range_i + 1, 8)
 		Pickup.SPEED_UP:
 			pl.speed_ups = mini(pl.speed_ups + 1, 5)
+		Pickup.KICK:
+			pl.has_kick = true
+		Pickup.REMOTE:
+			pl.has_remote = true
 	events.append(GameEvent.new(Event.PICKUP_COLLECTED, {"pid": pl.pid, "kind": pd.kind}))
 	pickups.erase(pd)
 

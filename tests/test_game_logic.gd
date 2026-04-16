@@ -32,6 +32,14 @@ func run() -> void:
 	test_explosion_destroys_pickup()
 	test_speed_increases_with_shoes()
 	test_chain_explosion()
+	test_kick_bomb()
+	test_no_kick_without_ability()
+	test_bomb_slide_stops_at_wall()
+	test_remote_bomb()
+	test_remote_detonate()
+	test_pickup_kick()
+	test_pickup_remote()
+	test_map_template()
 	print("  done.\n")
 
 
@@ -278,3 +286,105 @@ func test_speed_increases_with_shoes() -> void:
 	T.assert_gt(gl.p1.move_speed(), base_spd, "faster with shoes")
 	gl.p1.speed_ups = 99
 	T.assert_lte(gl.p1.move_speed(), GameLogic.MAX_SPEED, "capped at MAX_SPEED")
+
+
+# ── 踢雷 ─────────────────────────────────
+
+func test_kick_bomb() -> void:
+	T.begin("kick_bomb")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.p1.has_kick = true
+	gl.bombs.append(GameLogic.BombData.new(2, 1, 1, 999.0, 1))
+	var moved := gl.try_start_move(gl.p1, 1, 0)
+	T.assert_false(moved, "player stays put")
+	var bd: GameLogic.BombData = gl.bombs[0]
+	T.assert_true(bd.moving, "bomb kicked into motion")
+	T.assert_eq(bd.move_dir, Vector2i(1, 0), "moves right")
+
+
+func test_no_kick_without_ability() -> void:
+	T.begin("no_kick_without_ability")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.bombs.append(GameLogic.BombData.new(2, 1, 1, 999.0, 1))
+	gl.try_start_move(gl.p1, 1, 0)
+	var bd: GameLogic.BombData = gl.bombs[0]
+	T.assert_false(bd.moving, "bomb not kicked")
+
+
+func test_bomb_slide_stops_at_wall() -> void:
+	T.begin("bomb_slide_stops_at_wall")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 8)
+	gl.p1.has_kick = true
+	gl.bombs.append(GameLogic.BombData.new(2, 1, 0, 999.0, 1))
+	gl.try_start_move(gl.p1, 1, 0)
+	for i in range(200):
+		gl.tick_moving_bombs(0.02)
+	var bd: GameLogic.BombData = gl.bombs[0]
+	T.assert_false(bd.moving, "stopped sliding")
+	T.assert_true(bd.gx < GameLogic.COLS, "within bounds")
+
+
+# ── 遥控引爆 ─────────────────────────────
+
+func test_remote_bomb() -> void:
+	T.begin("remote_bomb")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.p1.has_remote = true
+	gl.try_place_bomb(gl.p1)
+	T.assert_eq(gl.bombs.size(), 1, "placed")
+	var bd: GameLogic.BombData = gl.bombs[0]
+	T.assert_true(bd.is_remote, "remote flag set")
+	T.assert_true(bd.time > 100.0, "very long fuse")
+
+
+func test_remote_detonate() -> void:
+	T.begin("remote_detonate")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.p1.has_remote = true
+	gl.try_place_bomb(gl.p1)
+	gl.try_start_move(gl.p1, 1, 0)
+	_finish_move(gl, gl.p1)
+	gl.try_start_move(gl.p1, 1, 0)
+	_finish_move(gl, gl.p1)
+	gl.try_place_bomb(gl.p1)
+	var bd: GameLogic.BombData = gl.bombs[0]
+	T.assert_true(bd.time <= 0.0, "remote detonated")
+
+
+# ── 新道具 ───────────────────────────────
+
+func test_pickup_kick() -> void:
+	T.begin("pickup_kick")
+	var gl := _make()
+	gl.pickups.append(GameLogic.PickupData.new(1, 1, GameLogic.Pickup.KICK))
+	gl.try_collect_pickup(gl.p1)
+	T.assert_true(gl.p1.has_kick, "kick acquired")
+	T.assert_eq(gl.pickups.size(), 0, "consumed")
+
+
+func test_pickup_remote() -> void:
+	T.begin("pickup_remote")
+	var gl := _make()
+	gl.pickups.append(GameLogic.PickupData.new(1, 1, GameLogic.Pickup.REMOTE))
+	gl.try_collect_pickup(gl.p1)
+	T.assert_true(gl.p1.has_remote, "remote acquired")
+	T.assert_eq(gl.pickups.size(), 0, "consumed")
+
+
+# ── 地图模板 ─────────────────────────────
+
+func test_map_template() -> void:
+	T.begin("map_template")
+	var gl := GameLogic.new(42)
+	var arena := MapDefs.get_presets()[1]
+	gl.reset(arena)
+	T.assert_eq(gl.grid.size(), GameLogic.COLS, "cols")
+	T.assert_eq(gl.grid[0].size(), GameLogic.ROWS, "rows")
+	T.assert_eq(gl.grid[2][2], GameLogic.Cell.WALL, "arena wall (2,2)")
+	T.assert_eq(gl.grid[3][2], GameLogic.Cell.WALL, "arena wall (3,2)")
+	T.assert_eq(gl.grid[7][5], GameLogic.Cell.EMPTY, "arena center empty")

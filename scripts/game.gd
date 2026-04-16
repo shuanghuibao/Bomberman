@@ -11,17 +11,13 @@ const TOAST_TTL := 1.8
 const CLR_PICKUP_BOMB := Color(0.28, 0.62, 1.0)
 const CLR_PICKUP_FIRE := Color(1.0, 0.42, 0.22)
 const CLR_PICKUP_SPEED := Color(0.25, 0.88, 0.42)
+const CLR_PICKUP_KICK := Color(0.95, 0.82, 0.18)
+const CLR_PICKUP_REMOTE := Color(0.72, 0.38, 0.95)
 
 const NPC_COLORS: Array[Color] = [
 	Color(1.0, 0.52, 0.38),
 	Color(0.62, 0.85, 0.30),
 	Color(0.90, 0.55, 0.90),
-]
-
-const NPC_SPAWNS: Array[Vector2i] = [
-	Vector2i(13, 9),
-	Vector2i(1, 9),
-	Vector2i(13, 1),
 ]
 
 var logic: GameLogic
@@ -30,8 +26,9 @@ var origin := Vector2.ZERO
 var match_paused: bool = false
 var is_vs_npc: bool = false
 var npc_count: int = 1
-var npcs: Array = []  # Array[NpcAI]
-var npc_players: Array = []  # Array[GameLogic.PlayerData]
+var npcs: Array = []
+var npc_players: Array = []
+var _current_map: Dictionary = {}
 
 class ToastItem:
 	var text: String
@@ -62,7 +59,13 @@ func _ready() -> void:
 	if has_meta("npc_count"):
 		npc_count = clampi(get_meta("npc_count"), 1, 3)
 
-	logic.reset()
+	var all_maps := MapDefs.get_all_maps()
+	var map_index := 0
+	if has_meta("map_index"):
+		map_index = clampi(int(get_meta("map_index")), 0, maxi(all_maps.size() - 1, 0))
+	_current_map = all_maps[map_index] if map_index < all_maps.size() else {}
+
+	logic.reset(_current_map)
 	_setup_npc_players()
 
 	%BtnMenu.pressed.connect(_go_main_menu)
@@ -80,13 +83,14 @@ func _setup_npc_players() -> void:
 	npc_players.clear()
 	if not is_vs_npc:
 		return
+	var spawns: Array = _current_map.get("spawns", MapDefs.DEFAULT_SPAWNS)
 	for i in range(npc_count):
-		var spawn: Vector2i = NPC_SPAWNS[i]
+		var spawn_idx := 2 + i
+		var spawn: Vector2i = spawns[spawn_idx] if spawn_idx < spawns.size() else Vector2i(13, 9)
 		var pl := GameLogic.PlayerData.new(10 + i, spawn.x, spawn.y)
 		npc_players.append(pl)
 		var ai = NpcAIScript.new(logic, pl)
 		npcs.append(ai)
-		# clear spawn area
 		for dx in range(-1, 2):
 			for dy in range(-1, 2):
 				var cx := spawn.x + dx
@@ -112,7 +116,7 @@ func _recalc_origin() -> void:
 
 
 func _reset_match() -> void:
-	logic.reset()
+	logic.reset(_current_map)
 	_setup_npc_players()
 	match_paused = false
 	_pause_layer.hide()
@@ -164,6 +168,7 @@ func _process(delta: float) -> void:
 	else:
 		logic.update_player(logic.p2, _read_dir_p2(), Input.is_action_just_pressed("p2_bomb"), delta)
 
+	logic.tick_moving_bombs(delta)
 	logic.tick_bombs(delta)
 	_resolve_phase_extended()
 
@@ -208,15 +213,8 @@ func _resolve_phase_extended() -> void:
 	if logic.phase != GameLogic.Phase.PLAYING:
 		return
 	if is_vs_npc:
-		var any_npc_alive := false
-		for pl in npc_players:
-			var p: GameLogic.PlayerData = pl
-			if p.alive:
-				any_npc_alive = true
-				break
-		# also damage NPC players from explosions
 		_damage_npc_players()
-		any_npc_alive = false
+		var any_npc_alive := false
 		for pl in npc_players:
 			var p: GameLogic.PlayerData = pl
 			if p.alive:
@@ -257,6 +255,10 @@ func _handle_events() -> void:
 			GameLogic.Event.PICKUP_COLLECTED:
 				_sfx.play_pickup()
 				_spawn_pickup_toast(e.data)
+			GameLogic.Event.BOMB_KICKED:
+				_sfx.play_kick()
+			GameLogic.Event.REMOTE_DETONATE:
+				_sfx.play_detonate()
 			GameLogic.Event.PHASE_END:
 				_show_result()
 				var p: int = e.data.get("phase", 0)
@@ -282,6 +284,12 @@ func _spawn_pickup_toast(data: Dictionary) -> void:
 		GameLogic.Pickup.SPEED_UP:
 			desc = "%s 获得 加速鞋（移动更快）" % who
 			col = CLR_PICKUP_SPEED
+		GameLogic.Pickup.KICK:
+			desc = "%s 获得 踢雷（走向炸弹可踢飞）" % who
+			col = CLR_PICKUP_KICK
+		GameLogic.Pickup.REMOTE:
+			desc = "%s 获得 遥控引爆（满雷后再按引爆）" % who
+			col = CLR_PICKUP_REMOTE
 	_toasts.append(ToastItem.new(desc, col, TOAST_TTL))
 	_sync_toast_ui()
 
@@ -357,11 +365,20 @@ func _norm_dir(x: int, y: int) -> Vector2i:
 
 func _refresh_ui() -> void:
 	if is_vs_npc:
-		var p1s := "你 炸弹%d 火力%d 速度%d" % [logic.p1.max_bombs, logic.p1.range_i, logic.p1.speed_ups]
+		var extras := ""
+		if logic.p1.has_kick: extras += " 踢"
+		if logic.p1.has_remote: extras += " 遥控"
+		var p1s := "你 炸弹%d 火力%d 速度%d%s" % [logic.p1.max_bombs, logic.p1.range_i, logic.p1.speed_ups, extras]
 		_lbl_hint.text = "%s  |  WASD/空格  R重开  Esc暂停" % p1s
 	else:
-		var p1s := "P1 炸弹%d 火力%d 速度%d" % [logic.p1.max_bombs, logic.p1.range_i, logic.p1.speed_ups]
-		var p2s := "P2 炸弹%d 火力%d 速度%d" % [logic.p2.max_bombs, logic.p2.range_i, logic.p2.speed_ups]
+		var e1 := ""
+		if logic.p1.has_kick: e1 += " 踢"
+		if logic.p1.has_remote: e1 += " 遥控"
+		var e2 := ""
+		if logic.p2.has_kick: e2 += " 踢"
+		if logic.p2.has_remote: e2 += " 遥控"
+		var p1s := "P1 炸弹%d 火力%d 速度%d%s" % [logic.p1.max_bombs, logic.p1.range_i, logic.p1.speed_ups, e1]
+		var p2s := "P2 炸弹%d 火力%d 速度%d%s" % [logic.p2.max_bombs, logic.p2.range_i, logic.p2.speed_ups, e2]
 		_lbl_hint.text = "%s  |  %s  |  WASD/空格  方向键/回车  R重开  Esc暂停" % [p1s, p2s]
 	if logic.phase == GameLogic.Phase.PLAYING:
 		_lbl_phase.text = "对局进行中" if not match_paused else "已暂停"
@@ -410,14 +427,7 @@ func _draw() -> void:
 
 	for b in L.bombs:
 		var bd: GameLogic.BombData = b
-		var pulse := 0.5 + 0.5 * sin(bd.time * 14.0)
-		var inset := ts * 0.15 + pulse * ts * 0.05
-		var rx := o.x + bd.gx * ts + inset
-		var ry := o.y + bd.gy * ts + inset
-		var sz := ts - inset * 2.0
-		draw_rect(Rect2(rx, ry, sz, sz), Color(0.05, 0.05, 0.06))
-		var inner := ts * 0.08
-		draw_rect(Rect2(rx + inner, ry + inner, sz - inner * 2.0, sz - inner * 2.0), Color(0.95, 0.35, 0.12))
+		_draw_bomb(bd, o, ts)
 
 	for e in L.explosions:
 		var ex: GameLogic.ExplData = e
@@ -436,30 +446,51 @@ func _draw() -> void:
 		_draw_player(L.p2, Color(1.0, 0.52, 0.38))
 
 
+func _draw_bomb(bd: GameLogic.BombData, o: Vector2, ts: float) -> void:
+	var pulse := 0.5 + 0.5 * sin(bd.time * 14.0)
+	var inset := ts * 0.15 + pulse * ts * 0.05
+	var rx := o.x + bd.gx * ts + inset
+	var ry := o.y + bd.gy * ts + inset
+	var sz := ts - inset * 2.0
+	draw_rect(Rect2(rx, ry, sz, sz), Color(0.05, 0.05, 0.06))
+	var inner := ts * 0.08
+	var core_color := CLR_PICKUP_REMOTE if bd.is_remote else Color(0.95, 0.35, 0.12)
+	draw_rect(Rect2(rx + inner, ry + inner, sz - inner * 2.0, sz - inner * 2.0), core_color)
+
+
 func _draw_pickup(pd: GameLogic.PickupData, o: Vector2, ts: float) -> void:
 	var m := ts * 0.28
 	var col: Color
-	if pd.kind == GameLogic.Pickup.BOMB_UP:
-		col = CLR_PICKUP_BOMB
-	elif pd.kind == GameLogic.Pickup.FIRE_UP:
-		col = CLR_PICKUP_FIRE
-	elif pd.kind == GameLogic.Pickup.SPEED_UP:
-		col = CLR_PICKUP_SPEED
-	else:
-		col = Color.WHITE
+	match pd.kind:
+		GameLogic.Pickup.BOMB_UP: col = CLR_PICKUP_BOMB
+		GameLogic.Pickup.FIRE_UP: col = CLR_PICKUP_FIRE
+		GameLogic.Pickup.SPEED_UP: col = CLR_PICKUP_SPEED
+		GameLogic.Pickup.KICK: col = CLR_PICKUP_KICK
+		GameLogic.Pickup.REMOTE: col = CLR_PICKUP_REMOTE
+		_: col = Color.WHITE
 	var bg := col.darkened(0.55)
-	draw_rect(Rect2(o.x + pd.gx * ts + m - 2.0, o.y + pd.gy * ts + m - 2.0, ts - (m - 2.0) * 2.0, ts - (m - 2.0) * 2.0), bg)
-	draw_rect(Rect2(o.x + pd.gx * ts + m, o.y + pd.gy * ts + m, ts - m * 2.0, ts - m * 2.0), col)
+	draw_rect(Rect2(o.x + pd.gx * ts + m - 2.0, o.y + pd.gy * ts + m - 2.0,
+		ts - (m - 2.0) * 2.0, ts - (m - 2.0) * 2.0), bg)
+	draw_rect(Rect2(o.x + pd.gx * ts + m, o.y + pd.gy * ts + m,
+		ts - m * 2.0, ts - m * 2.0), col)
 	var cx := o.x + pd.gx * ts + ts * 0.5
 	var cy := o.y + pd.gy * ts + ts * 0.5
 	var dot := ts * 0.08
-	if pd.kind == GameLogic.Pickup.BOMB_UP:
-		draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
-	elif pd.kind == GameLogic.Pickup.FIRE_UP:
-		draw_rect(Rect2(cx - dot * 2.5, cy - dot, dot * 5.0, dot * 2.0), Color.WHITE)
-		draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
-	elif pd.kind == GameLogic.Pickup.SPEED_UP:
-		draw_rect(Rect2(cx - dot * 1.5, cy - dot * 1.5, dot * 3.0, dot * 3.0), Color.WHITE)
+	match pd.kind:
+		GameLogic.Pickup.BOMB_UP:
+			draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
+		GameLogic.Pickup.FIRE_UP:
+			draw_rect(Rect2(cx - dot * 2.5, cy - dot, dot * 5.0, dot * 2.0), Color.WHITE)
+			draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
+		GameLogic.Pickup.SPEED_UP:
+			draw_rect(Rect2(cx - dot * 1.5, cy - dot * 1.5, dot * 3.0, dot * 3.0), Color.WHITE)
+		GameLogic.Pickup.KICK:
+			draw_rect(Rect2(cx - dot * 2.5, cy - dot * 0.5, dot * 4.0, dot), Color.WHITE)
+			draw_rect(Rect2(cx + dot, cy - dot * 1.5, dot, dot * 3.0), Color.WHITE)
+		GameLogic.Pickup.REMOTE:
+			draw_rect(Rect2(cx - dot * 2.0, cy - dot * 2.0, dot * 4.0, dot * 4.0), Color.WHITE)
+			draw_rect(Rect2(cx - dot, cy - dot, dot * 2.0, dot * 2.0), col.darkened(0.3))
+			draw_rect(Rect2(cx - dot * 0.5, cy - dot * 0.5, dot, dot), Color.WHITE)
 
 
 func _draw_player(pl: GameLogic.PlayerData, col: Color) -> void:
