@@ -21,9 +21,14 @@ const LAVA_DAMAGE_TIME := 0.8
 const PORTAL_COOLDOWN := 0.5
 const SHRINK_START := 30.0
 const SHRINK_INTERVAL := 8.0
+const GRASS_DROP_CHANCE := 0.25
+const ERUPTION_INTERVAL := 22.0
+const BLIZZARD_INTERVAL := 20.0
+const BLIZZARD_DURATION := 4.0
+const CREATURE_MOVE_TIME := 1.5
 
 enum Cell { EMPTY, WALL, CRATE, IRON_CRATE, SHRINK_WALL, WATER }
-enum Floor { NORMAL, ICE, MUD, GRASS, SNOW, SAND, LAVA }
+enum Floor { NORMAL, ICE, MUD, GRASS, SNOW, SAND, LAVA, CONV_N, CONV_E, CONV_S, CONV_W }
 enum Phase { PLAYING, P1_WIN, P2_WIN, DRAW }
 enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE, SHIELD, SLOW_CURSE }
 
@@ -127,12 +132,22 @@ class PickupData:
 		gx = x; gy = y; kind = k
 
 
+class CreatureData:
+	var gx: int
+	var gy: int
+	var alive: bool = true
+	var move_timer: float = 0.0
+	func _init(x: int, y: int) -> void:
+		gx = x; gy = y; move_timer = randf() * 1.0
+
+
 # ── 事件队列 ─────────────────────────────
 
 enum Event {
 	BOMB_PLACED, EXPLOSION, PICKUP_COLLECTED, PHASE_END,
 	BOMB_KICKED, REMOTE_DETONATE, SHIELD_BREAK,
 	TELEPORT, SHRINK_ADVANCE, IRON_HIT, IRON_BREAK,
+	GRASS_BURNED, CRATE_DESTROYED, ERUPTION, CREATURE_KILLED,
 }
 
 class GameEvent:
@@ -162,6 +177,11 @@ var phase: int = Phase.PLAYING
 var shrink_enabled: bool = false
 var shrink_timer: float = 0.0
 var shrink_ring: int = 0
+var creatures: Array = []
+var eruption_timer: float = 0.0
+var blizzard_timer: float = 0.0
+var blizzard_active: bool = false
+var blizzard_remaining: float = 0.0
 var _map: Dictionary = {}
 
 
@@ -188,6 +208,11 @@ func reset(map: Dictionary = {}) -> void:
 	shrink_timer = 0.0
 	shrink_ring = 0
 	shrink_enabled = _map.get("shrink", false)
+	creatures.clear()
+	eruption_timer = 0.0
+	blizzard_timer = 0.0
+	blizzard_active = false
+	blizzard_remaining = 0.0
 	_build_grid()
 	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(cols - 2, rows - 2)])
 	if spawns.size() >= 1:
@@ -216,13 +241,15 @@ func _build_grid() -> void:
 	var template: Array = _map.get("template", [])
 	var density: float = _map.get("crate_density", 0.52)
 	if template.size() == rows:
-		_build_from_template(template, density)
+		_parse_template(template)
+		_randomize_terrain()
+		_place_crates(density)
 	else:
 		_build_default_grid(density)
 	_carve_reachable_crates()
 
 
-func _build_from_template(template: Array, density: float) -> void:
+func _parse_template(template: Array) -> void:
 	var pending_portals: Array[Vector2i] = []
 	for x in range(cols):
 		for y in range(rows):
@@ -257,10 +284,28 @@ func _build_from_template(template: Array, density: float) -> void:
 				"L":
 					grid[x][y] = Cell.EMPTY
 					floor_grid[x][y] = Floor.LAVA
+				">":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.CONV_E
+				"<":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.CONV_W
+				"^":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.CONV_N
+				"v":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.CONV_S
+				"C":
+					grid[x][y] = Cell.EMPTY
+					creatures.append(CreatureData.new(x, y))
 				_:
 					grid[x][y] = Cell.EMPTY
 	for i in range(0, pending_portals.size() - 1, 2):
 		portals.append([pending_portals[i], pending_portals[i + 1]])
+
+
+func _place_crates(density: float) -> void:
 	var spawns: Array = _map.get("spawns", [])
 	for x in range(1, cols - 1):
 		for y in range(1, rows - 1):
@@ -274,6 +319,169 @@ func _build_from_template(template: Array, density: float) -> void:
 				continue
 			if rng.randf() < density:
 				grid[x][y] = Cell.CRATE
+
+
+# ── 主题地形随机化 ────────────────────────
+
+func _randomize_terrain() -> void:
+	var theme: String = _map.get("theme", "classic")
+	if theme == "classic":
+		return
+	var spawns: Array = _map.get("spawns", [])
+	var portal_pairs: int = portals.size()
+
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if grid[x][y] == Cell.WATER:
+				grid[x][y] = Cell.EMPTY
+			floor_grid[x][y] = Floor.NORMAL
+	portals.clear()
+
+	match theme:
+		"grassland": _deco_grassland(spawns)
+		"tundra": _deco_tundra(spawns)
+		"desert": _deco_desert(spawns)
+		"volcano": _deco_volcano(spawns)
+
+	_place_portals_random(portal_pairs, spawns)
+
+
+func _deco_grassland(spawns: Array) -> void:
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if grid[x][y] == Cell.EMPTY and not _is_near_any_spawn(x, y, spawns):
+				if rng.randf() < 0.35:
+					floor_grid[x][y] = Floor.GRASS
+	_place_river(spawns)
+
+
+func _deco_tundra(spawns: Array) -> void:
+	var cx := cols / 2
+	var cy := rows / 2
+	var ice_radius: float = minf(float(cols), float(rows)) * 0.28 + rng.randf() * 2.0
+	var ice_cx: int = cx + rng.randi() % 5 - 2
+	var ice_cy: int = cy + rng.randi() % 3 - 1
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if grid[x][y] != Cell.EMPTY:
+				continue
+			var dist_border := mini(mini(x, cols - 1 - x), mini(y, rows - 1 - y))
+			var dx := float(x - ice_cx)
+			var dy := float(y - ice_cy)
+			var dist_center := sqrt(dx * dx + dy * dy)
+			if dist_center <= ice_radius and rng.randf() < 0.55:
+				floor_grid[x][y] = Floor.ICE
+			elif dist_border <= 3 and rng.randf() < 0.7:
+				floor_grid[x][y] = Floor.SNOW
+
+
+func _deco_desert(spawns: Array) -> void:
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if grid[x][y] == Cell.EMPTY and not _is_near_any_spawn(x, y, spawns):
+				if rng.randf() < 0.30:
+					floor_grid[x][y] = Floor.SAND
+	var oasis_count: int = 1 + rng.randi() % 2
+	for oi in range(oasis_count):
+		_place_oasis(spawns)
+
+
+func _deco_volcano(spawns: Array) -> void:
+	var cx := cols / 2 + rng.randi() % 5 - 2
+	var cy := rows / 2 + rng.randi() % 3 - 1
+	var radius: float = minf(float(cols), float(rows)) * 0.22 + rng.randf() * 2.0
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if grid[x][y] != Cell.EMPTY:
+				continue
+			if _is_near_any_spawn(x, y, spawns):
+				continue
+			var dx := float(x - cx)
+			var dy := float(y - cy)
+			var dist := sqrt(dx * dx + dy * dy)
+			if dist <= radius and rng.randf() < 0.78:
+				floor_grid[x][y] = Floor.LAVA
+
+
+func _place_river(spawns: Array) -> void:
+	var vertical: bool = rng.randf() < 0.5
+	for attempt in range(40):
+		var positions: Array[Vector2i] = []
+		if vertical:
+			var cx: int = 3 + rng.randi() % maxi(1, cols - 6)
+			for y in range(1, rows - 1):
+				if grid[cx][y] == Cell.EMPTY and not _is_near_any_spawn(cx, y, spawns):
+					positions.append(Vector2i(cx, y))
+		else:
+			var cy: int = 3 + rng.randi() % maxi(1, rows - 6)
+			for x in range(1, cols - 1):
+				if grid[x][cy] == Cell.EMPTY and not _is_near_any_spawn(x, cy, spawns):
+					positions.append(Vector2i(x, cy))
+		if positions.size() >= 4:
+			var gap1: int = rng.randi() % positions.size()
+			var gap2: int = (gap1 + positions.size() / 2) % positions.size()
+			for i in range(positions.size()):
+				if i == gap1 or i == gap2:
+					continue
+				grid[positions[i].x][positions[i].y] = Cell.WATER
+			return
+
+
+func _place_oasis(spawns: Array) -> void:
+	for attempt in range(40):
+		var cx: int = 3 + rng.randi() % maxi(1, cols - 6)
+		var cy: int = 3 + rng.randi() % maxi(1, rows - 6)
+		if grid[cx][cy] != Cell.EMPTY or _is_near_any_spawn(cx, cy, spawns):
+			continue
+		grid[cx][cy] = Cell.WATER
+		var oasis_dirs: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+		for od: Vector2i in oasis_dirs:
+			var nx: int = cx + od.x
+			var ny: int = cy + od.y
+			if nx >= 1 and nx < cols - 1 and ny >= 1 and ny < rows - 1:
+				if grid[nx][ny] == Cell.EMPTY and not _is_near_any_spawn(nx, ny, spawns):
+					if rng.randf() < 0.6:
+						grid[nx][ny] = Cell.WATER
+					else:
+						floor_grid[nx][ny] = Floor.SAND
+		return
+
+
+func _place_portals_random(pair_count: int, spawns: Array) -> void:
+	if pair_count <= 0:
+		return
+	var eligible: Array[Vector2i] = []
+	for x in range(2, cols - 2):
+		for y in range(2, rows - 2):
+			if grid[x][y] != Cell.EMPTY:
+				continue
+			if _is_near_any_spawn(x, y, spawns):
+				continue
+			eligible.append(Vector2i(x, y))
+	for i in range(eligible.size() - 1, 0, -1):
+		var j: int = rng.randi() % (i + 1)
+		var tmp := eligible[i]
+		eligible[i] = eligible[j]
+		eligible[j] = tmp
+	var placed := 0
+	var used: Dictionary = {}
+	var idx := 0
+	while placed < pair_count and idx < eligible.size():
+		var a := eligible[idx]
+		idx += 1
+		if used.has(a):
+			continue
+		for j in range(idx, eligible.size()):
+			var b := eligible[j]
+			if used.has(b):
+				continue
+			var dist := absi(a.x - b.x) + absi(a.y - b.y)
+			if dist >= 6:
+				portals.append([a, b])
+				used[a] = true
+				used[b] = true
+				placed += 1
+				break
 
 
 func _build_default_grid(density: float) -> void:
@@ -453,6 +661,13 @@ func player_move_tick(pl: PlayerData, dt: float) -> void:
 			try_kill_player(pl)
 	else:
 		pl.lava_timer = 0.0
+	if not pl.moving and pl.aligned():
+		var conv_floor := floor_at(int(roundf(pl.gx)), int(roundf(pl.gy)))
+		match conv_floor:
+			Floor.CONV_N: try_start_move(pl, 0, -1)
+			Floor.CONV_E: try_start_move(pl, 1, 0)
+			Floor.CONV_S: try_start_move(pl, 0, 1)
+			Floor.CONV_W: try_start_move(pl, -1, 0)
 
 
 func update_player(pl: PlayerData, dir: Vector2i, want_bomb: bool, dt: float) -> void:
@@ -618,11 +833,17 @@ func _spread_blast(ox: int, oy: int, dx: int, dy: int, range_i: int, q: Array) -
 		var stop := _blast_cell(x, y, q)
 		if c == Cell.CRATE:
 			grid[x][y] = Cell.EMPTY
+			events.append(GameEvent.new(Event.CRATE_DESTROYED, {"gx": x, "gy": y}))
 			_maybe_drop_pickup(x, y)
 			break
 		if c == Cell.IRON_CRATE:
 			_damage_iron_crate(x, y)
 			break
+		if c == Cell.EMPTY and floor_grid[x][y] == Floor.GRASS:
+			floor_grid[x][y] = Floor.NORMAL
+			events.append(GameEvent.new(Event.GRASS_BURNED, {"gx": x, "gy": y}))
+			if rng.randf() < GRASS_DROP_CHANCE:
+				_maybe_drop_pickup(x, y)
 		if stop:
 			break
 
@@ -808,3 +1029,74 @@ func resolve_phase() -> void:
 		phase = Phase.DRAW
 	if phase != Phase.PLAYING:
 		events.append(GameEvent.new(Event.PHASE_END, {"phase": phase}))
+
+
+# ── 地图灾害 ─────────────────────────────
+
+func tick_hazards(dt: float, theme: String) -> void:
+	if theme == "volcano":
+		eruption_timer += dt
+		if eruption_timer >= ERUPTION_INTERVAL:
+			eruption_timer = 0.0
+			_trigger_eruption()
+	if theme == "tundra":
+		if blizzard_active:
+			blizzard_remaining -= dt
+			if blizzard_remaining <= 0.0:
+				blizzard_active = false
+		else:
+			blizzard_timer += dt
+			if blizzard_timer >= BLIZZARD_INTERVAL:
+				blizzard_timer = 0.0
+				blizzard_active = true
+				blizzard_remaining = BLIZZARD_DURATION
+
+
+func _trigger_eruption() -> void:
+	var lava_cells: Array[Vector2i] = []
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if floor_grid[x][y] == Floor.LAVA and grid[x][y] == Cell.EMPTY:
+				lava_cells.append(Vector2i(x, y))
+	var count := mini(3 + rng.randi() % 3, lava_cells.size())
+	for i in range(count):
+		var idx: int = rng.randi() % lava_cells.size()
+		var pos := lava_cells[idx]
+		lava_cells.remove_at(idx)
+		explosions.append(ExplData.new(pos.x, pos.y, EXPLOSION_TTL))
+		_damage_at(pos.x, pos.y)
+	if count > 0:
+		events.append(GameEvent.new(Event.ERUPTION, {}))
+
+
+# ── 中立生物 ─────────────────────────────
+
+func tick_creatures(dt: float) -> void:
+	var dirs: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	for c_item in creatures:
+		var cr: CreatureData = c_item
+		if not cr.alive:
+			continue
+		for e in explosions:
+			var ex: ExplData = e
+			if ex.gx == cr.gx and ex.gy == cr.gy:
+				cr.alive = false
+				_maybe_drop_pickup(cr.gx, cr.gy)
+				events.append(GameEvent.new(Event.CREATURE_KILLED, {"gx": cr.gx, "gy": cr.gy}))
+				break
+		if not cr.alive:
+			continue
+		cr.move_timer -= dt
+		if cr.move_timer <= 0.0:
+			cr.move_timer = CREATURE_MOVE_TIME + rng.randf() * 1.0
+			var valid_dirs: Array[Vector2i] = []
+			for d: Vector2i in dirs:
+				var nx: int = cr.gx + d.x
+				var ny: int = cr.gy + d.y
+				if nx >= 1 and nx < cols - 1 and ny >= 1 and ny < rows - 1:
+					if grid[nx][ny] == Cell.EMPTY and bomb_at(nx, ny) == null:
+						valid_dirs.append(d)
+			if not valid_dirs.is_empty():
+				var d: Vector2i = valid_dirs[rng.randi() % valid_dirs.size()]
+				cr.gx += d.x
+				cr.gy += d.y

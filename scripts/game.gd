@@ -33,6 +33,26 @@ var npc_players: Array = []
 var _current_map: Dictionary = {}
 var _sprites: SpriteFactory
 var _theme: String = "classic"
+var _anim_time: float = 0.0
+var _shake_offset := Vector2.ZERO
+var _shake_timer: float = 0.0
+var _shake_intensity: float = 0.0
+
+class Particle:
+	var x: float
+	var y: float
+	var vx: float
+	var vy: float
+	var life: float
+	var max_life: float
+	var color: Color
+	var size: float
+	func _init(px: float, py: float, pvx: float, pvy: float, pl: float, pc: Color, ps: float) -> void:
+		x = px; y = py; vx = pvx; vy = pvy; life = pl; max_life = pl; color = pc; size = ps
+
+var _weather_particles: Array = []
+var _debris_particles: Array = []
+const WEATHER_COUNT := 60
 
 const PLAYER_SPRITE_KEYS: Array[String] = ["p1", "p2"]
 const NPC_SPRITE_KEYS: Array[String] = ["npc0", "npc1", "npc2"]
@@ -86,6 +106,7 @@ func _ready() -> void:
 	logic.reset(_current_map)
 	_theme = str(_current_map.get("theme", "classic"))
 	_setup_npc_players()
+	_sfx.start_ambient(_theme)
 
 	%BtnMenu.pressed.connect(_go_main_menu)
 	%BtnResume.pressed.connect(_resume)
@@ -146,6 +167,9 @@ func _reset_match() -> void:
 	logic.reset(_current_map)
 	_theme = str(_current_map.get("theme", "classic"))
 	_setup_npc_players()
+	_sfx.start_ambient(_theme)
+	_weather_particles.clear()
+	_debris_particles.clear()
 	match_paused = false
 	_pause_layer.hide()
 	_result_layer.hide()
@@ -155,7 +179,10 @@ func _reset_match() -> void:
 
 
 func _process(delta: float) -> void:
+	_anim_time += delta
 	_tick_toasts(delta)
+	_tick_shake(delta)
+	_tick_particles(delta)
 
 	if Input.is_action_just_pressed("ui_cancel"):
 		if logic.phase == GameLogic.Phase.PLAYING:
@@ -199,11 +226,94 @@ func _process(delta: float) -> void:
 	logic.tick_moving_bombs(delta)
 	logic.tick_bombs(delta)
 	logic.tick_shrink(delta)
+	logic.tick_hazards(delta, _theme)
+	logic.tick_creatures(delta)
 	_resolve_phase_extended()
 
 	_handle_events()
 	_refresh_ui()
 	queue_redraw()
+
+
+func _tick_shake(dt: float) -> void:
+	if _shake_timer > 0.0:
+		_shake_timer -= dt
+		var t := _shake_timer / 0.3
+		_shake_offset = Vector2(
+			sin(_anim_time * 80.0) * _shake_intensity * t,
+			cos(_anim_time * 90.0) * _shake_intensity * t * 0.7
+		)
+		if _shake_timer <= 0.0:
+			_shake_offset = Vector2.ZERO
+
+
+func _trigger_shake(intensity: float) -> void:
+	_shake_intensity = intensity
+	_shake_timer = 0.3
+
+
+func _tick_particles(dt: float) -> void:
+	var vs := get_viewport().get_visible_rect().size
+	var gw := logic.cols * tile_size
+	var gh := logic.rows * tile_size
+
+	# Weather particles
+	while _weather_particles.size() < WEATHER_COUNT:
+		_weather_particles.append(_spawn_weather_particle(vs, gw, gh))
+	var i := 0
+	while i < _weather_particles.size():
+		var p: Particle = _weather_particles[i]
+		p.x += p.vx * dt
+		p.y += p.vy * dt
+		p.life -= dt
+		if p.life <= 0.0 or p.y > origin.y + gh + 20.0 or p.x > origin.x + gw + 20.0:
+			_weather_particles[i] = _spawn_weather_particle(vs, gw, gh)
+		i += 1
+
+	# Debris particles
+	i = _debris_particles.size() - 1
+	while i >= 0:
+		var p: Particle = _debris_particles[i]
+		p.x += p.vx * dt
+		p.y += p.vy * dt
+		p.vy += 200.0 * dt
+		p.life -= dt
+		if p.life <= 0.0:
+			_debris_particles.remove_at(i)
+		i -= 1
+
+
+func _spawn_weather_particle(vs: Vector2, gw: float, gh: float) -> Particle:
+	var px := origin.x + randf() * gw
+	var py := origin.y - randf() * 40.0
+	match _theme:
+		"grassland":
+			return Particle.new(px, py, randf() * 15.0 - 7.0, 20.0 + randf() * 15.0,
+				3.0 + randf() * 2.0, Color(0.35, 0.65, 0.20, 0.5), 3.0)
+		"tundra":
+			return Particle.new(px, py, randf() * 20.0 - 10.0, 12.0 + randf() * 10.0,
+				4.0 + randf() * 3.0, Color(1.0, 1.0, 1.0, 0.7), 2.5)
+		"desert":
+			return Particle.new(px, py, 25.0 + randf() * 15.0, randf() * 5.0 - 2.0,
+				2.0 + randf() * 2.0, Color(0.85, 0.72, 0.45, 0.4), 2.0)
+		"volcano":
+			return Particle.new(px, py, randf() * 10.0 - 5.0, 8.0 + randf() * 8.0,
+				2.5 + randf() * 2.0, Color(0.6, 0.4, 0.3, 0.45), 2.0)
+		_:
+			return Particle.new(px, py, randf() * 5.0, 10.0 + randf() * 5.0,
+				3.0 + randf() * 2.0, Color(0.5, 0.5, 0.5, 0.2), 1.5)
+
+
+func _spawn_debris(gx: int, gy: int, col: Color) -> void:
+	var cx := origin.x + (float(gx) + 0.5) * tile_size
+	var cy := origin.y + (float(gy) + 0.5) * tile_size
+	for k in range(8):
+		var angle := randf() * TAU
+		var spd := 60.0 + randf() * 100.0
+		_debris_particles.append(Particle.new(
+			cx, cy, cos(angle) * spd, sin(angle) * spd - 50.0,
+			0.4 + randf() * 0.3, col, 2.0 + randf() * 2.0
+		))
 
 
 func _update_npc_player(pl: GameLogic.PlayerData, dir: Vector2i, want_bomb: bool, dt: float) -> void:
@@ -284,6 +394,7 @@ func _handle_events() -> void:
 				_sfx.play_place_bomb()
 			GameLogic.Event.EXPLOSION:
 				_sfx.play_explosion()
+				_trigger_shake(tile_size * 0.12)
 			GameLogic.Event.PICKUP_COLLECTED:
 				var pk: int = e.data.get("kind", 0)
 				if pk == GameLogic.Pickup.SLOW_CURSE:
@@ -295,6 +406,16 @@ func _handle_events() -> void:
 				_sfx.play_kick()
 			GameLogic.Event.REMOTE_DETONATE:
 				_sfx.play_detonate()
+			GameLogic.Event.CRATE_DESTROYED:
+				_spawn_debris(e.data.get("gx", 0), e.data.get("gy", 0), Color(0.72, 0.50, 0.28))
+			GameLogic.Event.GRASS_BURNED:
+				_spawn_debris(e.data.get("gx", 0), e.data.get("gy", 0), Color(0.35, 0.60, 0.20))
+			GameLogic.Event.ERUPTION:
+				_trigger_shake(tile_size * 0.18)
+				_sfx.play_explosion()
+			GameLogic.Event.CREATURE_KILLED:
+				_spawn_debris(e.data.get("gx", 0), e.data.get("gy", 0), Color(0.85, 0.70, 0.40))
+				_sfx.play_pickup()
 			GameLogic.Event.SHIELD_BREAK:
 				_sfx.play_shield_break()
 				var sw := "P1" if e.data.get("pid", 0) == 0 else ("NPC" if e.data.get("pid", 0) >= 10 else "P2")
@@ -423,6 +544,10 @@ func _norm_dir(x: int, y: int) -> Vector2i:
 	return Vector2i(x, y)
 
 
+func _tile_hash(x: int, y: int) -> float:
+	return absf(fmod(sin(float(x) * 12.9898 + float(y) * 78.233) * 43758.5453, 1.0))
+
+
 func _refresh_ui() -> void:
 	if is_vs_npc:
 		var p1s := "你 %s" % _player_stat_str(logic.p1)
@@ -470,7 +595,7 @@ func _on_rematch() -> void:
 # ── 绘制 ──────────────────────────────────
 
 func _draw() -> void:
-	var o := origin
+	var o := origin + _shake_offset
 	var ts := tile_size
 	var L := logic
 	var th := _theme
@@ -494,52 +619,71 @@ func _draw() -> void:
 		for y in range(logic.rows):
 			var r := Rect2(o.x + x * ts, o.y + y * ts, ts, ts)
 			var c: int = L.grid[x][y]
+			var h := _tile_hash(x, y)
+			var bright := 0.93 + h * 0.14
 
 			if c == GameLogic.Cell.EMPTY:
 				var fl: int = L.floor_grid[x][y]
-				var ftex: ImageTexture = null
-				match fl:
-					GameLogic.Floor.ICE: ftex = ice_tex
-					GameLogic.Floor.MUD: ftex = mud_tex
-					GameLogic.Floor.GRASS: ftex = grass_tex
-					GameLogic.Floor.SNOW: ftex = snow_tex
-					GameLogic.Floor.SAND: ftex = sand_tex
-					GameLogic.Floor.LAVA: ftex = lava_tex
-					_: ftex = ground_tex
-				if ftex:
-					draw_texture_rect(ftex, r, false)
+				var has_shadow: bool = y > 0 and (L.grid[x][y - 1] == GameLogic.Cell.WALL \
+					or L.grid[x][y - 1] == GameLogic.Cell.IRON_CRATE)
+				var bt := Color(bright, bright, bright)
+
+				if fl == GameLogic.Floor.GRASS and grass_tex:
+					var sway := sin(_anim_time * 1.5 + float(x) * 1.1 + float(y) * 0.7) * ts * 0.015
+					draw_texture_rect(grass_tex, Rect2(r.position.x + sway, r.position.y, r.size.x, r.size.y), false, bt)
+				elif fl == GameLogic.Floor.LAVA and lava_tex:
+					var lp := 0.85 + 0.15 * sin(_anim_time * 3.5 + float(x) * 0.5 + float(y) * 0.8)
+					draw_texture_rect(lava_tex, r, false, Color(bright, lp * bright, lp * 0.7 * bright))
+				elif fl == GameLogic.Floor.ICE and ice_tex:
+					var shimmer := 0.95 + 0.05 * sin(_anim_time * 2.0 + float(x) * 0.9 + float(y) * 0.6)
+					draw_texture_rect(ice_tex, r, false, Color(shimmer * bright, shimmer * bright, bright))
+				elif fl == GameLogic.Floor.SNOW and snow_tex:
+					draw_texture_rect(snow_tex, r, false, bt)
+				elif fl == GameLogic.Floor.SAND and sand_tex:
+					draw_texture_rect(sand_tex, r, false, bt)
+				elif fl == GameLogic.Floor.MUD and mud_tex:
+					draw_texture_rect(mud_tex, r, false, bt)
+				elif ground_tex:
+					draw_texture_rect(ground_tex, r, false, bt)
 				else:
-					draw_rect(r, Color(0.12, 0.13, 0.16))
+					draw_rect(r, Color(0.22 * bright, 0.24 * bright, 0.30 * bright))
+
+				if has_shadow:
+					draw_rect(Rect2(r.position.x, r.position.y, ts, ts * 0.18), Color(0, 0, 0, 0.14))
+				_draw_tile_deco(x, y, fl, h, o, ts)
+
 			elif c == GameLogic.Cell.WALL:
 				if wall_tex:
-					draw_texture_rect(wall_tex, r, false)
+					draw_texture_rect(wall_tex, r, false, Color(bright, bright, bright))
 				else:
-					draw_rect(r, Color(0.22, 0.24, 0.30))
+					draw_rect(r, Color(0.22 * bright, 0.24 * bright, 0.30 * bright))
+				if y + 1 < logic.rows and L.grid[x][y + 1] == GameLogic.Cell.EMPTY:
+					var hl := Color(1.0, 1.0, 1.0, 0.08)
+					draw_rect(Rect2(r.position.x, r.position.y + ts - 1.0, ts, 1.0), hl)
 			elif c == GameLogic.Cell.CRATE:
 				if crate_tex:
-					draw_texture_rect(crate_tex, r, false)
+					draw_texture_rect(crate_tex, r, false, Color(bright, bright, bright))
 				else:
-					draw_rect(r, Color(0.78, 0.52, 0.28))
+					draw_rect(r, Color(0.78 * bright, 0.52 * bright, 0.28 * bright))
 			elif c == GameLogic.Cell.IRON_CRATE:
 				var hp: int = L.iron_hp.get(Vector2i(x, y), 2)
 				if iron_tex:
-					var tint := Color.WHITE if hp >= 2 else Color(1.0, 0.75, 0.65)
+					var tint := Color(bright, bright, bright) if hp >= 2 else Color(bright, 0.75 * bright, 0.65 * bright)
 					draw_texture_rect(iron_tex, r, false, tint)
 				else:
 					draw_rect(r, Color(0.50, 0.52, 0.58) if hp >= 2 else Color(0.62, 0.40, 0.35))
 			elif c == GameLogic.Cell.SHRINK_WALL:
+				var sp := 0.9 + 0.1 * sin(_anim_time * 2.0 + float(x + y) * 0.5)
 				if shrink_tex:
-					draw_texture_rect(shrink_tex, r, false)
+					draw_texture_rect(shrink_tex, r, false, Color(sp, 0.85, 0.85))
 				else:
-					draw_rect(r, Color(0.65, 0.12, 0.15))
+					draw_rect(r, Color(0.65 * sp, 0.12, 0.15))
 			elif c == GameLogic.Cell.WATER:
 				if water_tex:
-					draw_texture_rect(water_tex, r, false)
+					var wp := 0.92 + 0.08 * sin(_anim_time * 2.5 + float(x) * 0.8 + float(y) * 0.6)
+					draw_texture_rect(water_tex, r, false, Color(wp, 0.95 + 0.05 * sin(_anim_time * 3.0 + float(x)), 1.0))
 				else:
-					draw_rect(r, Color(0.15, 0.35, 0.65))
-
-			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, 1.0), Color(0, 0, 0, 0.12))
-			draw_rect(Rect2(o.x + x * ts, o.y + y * ts, 1.0, ts), Color(0, 0, 0, 0.12))
+					draw_rect(r, Color(0.15, 0.45, 0.82))
 
 	for pair in L.portals:
 		_draw_portal(pair, o, ts)
@@ -563,6 +707,29 @@ func _draw() -> void:
 		else:
 			draw_rect(r, Color(1.0, 0.85 * t, 0.15 * t, 0.85))
 
+	# Conveyor arrows
+	for x in range(L.cols):
+		for y in range(L.rows):
+			var ft: int = L.floor_grid[x][y]
+			if ft >= GameLogic.Floor.CONV_N and ft <= GameLogic.Floor.CONV_W:
+				_draw_conveyor(x, y, ft, o, ts)
+
+	# Water edge foam
+	for x in range(L.cols):
+		for y in range(L.rows):
+			if L.grid[x][y] == GameLogic.Cell.WATER:
+				_draw_water_edges(x, y, o, ts)
+
+	# Creatures
+	for cr_item in L.creatures:
+		var cr: GameLogic.CreatureData = cr_item
+		if cr.alive:
+			_draw_creature(cr, o, ts)
+
+	# Torch glow on volcano
+	if th == "volcano":
+		_draw_torch_glow(o, ts)
+
 	_draw_player_sprite(L.p1, "p1")
 	if is_vs_npc:
 		for i in range(npc_players.size()):
@@ -570,21 +737,34 @@ func _draw() -> void:
 	else:
 		_draw_player_sprite(L.p2, "p2")
 
+	# Weather & debris particles
+	_draw_particles(o, ts)
+
+	# Blizzard fog overlay
+	if L.blizzard_active:
+		_draw_blizzard_fog(o, ts)
+
 
 func _draw_portal(pair: Array, o: Vector2, ts: float) -> void:
-	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() * 0.005)
-	var portal_col := Color(0.55, 0.30, 0.95).lerp(Color(0.80, 0.55, 1.0), pulse)
+	var pulse := 0.5 + 0.5 * sin(_anim_time * 3.0)
+	var portal_col := Color(0.60, 0.35, 1.0).lerp(Color(0.85, 0.60, 1.0), pulse)
+	var scale_pulse := 0.28 + 0.04 * sin(_anim_time * 2.5)
 	for pos in pair:
 		var p: Vector2i = pos
-		var m := ts * 0.30
+		var m := ts * scale_pulse
 		draw_rect(
 			Rect2(o.x + p.x * ts + m, o.y + p.y * ts + m, ts - m * 2.0, ts - m * 2.0),
 			portal_col
 		)
-		var m2 := ts * 0.40
+		var m2 := ts * (scale_pulse + 0.10)
 		draw_rect(
 			Rect2(o.x + p.x * ts + m2, o.y + p.y * ts + m2, ts - m2 * 2.0, ts - m2 * 2.0),
-			Color(0.95, 0.85, 1.0, 0.6)
+			Color(0.98, 0.90, 1.0, 0.65)
+		)
+		var m3 := ts * (scale_pulse + 0.18)
+		draw_rect(
+			Rect2(o.x + p.x * ts + m3, o.y + p.y * ts + m3, ts - m3 * 2.0, ts - m3 * 2.0),
+			Color(1.0, 1.0, 1.0, 0.4 * pulse)
 		)
 
 
@@ -635,8 +815,9 @@ func _draw_player_sprite(pl: GameLogic.PlayerData, sprite_key: String) -> void:
 	var o := origin
 	var ts := tile_size
 	var m := ts * 0.08
+	var bob := sin(_anim_time * 4.0 + float(pl.pid) * 1.7) * ts * 0.04
 	var px := o.x + pl.gx * ts + m
-	var py := o.y + pl.gy * ts + m
+	var py := o.y + pl.gy * ts + m + bob
 	var sz := ts - m * 2.0
 
 	if pl.shield > 0:
@@ -654,3 +835,155 @@ func _draw_player_sprite(pl: GameLogic.PlayerData, sprite_key: String) -> void:
 		draw_rect(Rect2(px, py, sz, sz), col)
 
 	draw_rect(Rect2(px, py + sz - 3.0, sz, 3.0), Color(0, 0, 0, 0.2))
+
+
+func _draw_tile_deco(x: int, y: int, fl: int, h: float, o: Vector2, ts: float) -> void:
+	if h < 0.70:
+		return
+	var dh := _tile_hash(x + 97, y + 53)
+	var dx := o.x + float(x) * ts + ts * (0.25 + dh * 0.5)
+	var dy := o.y + float(y) * ts + ts * (0.30 + fmod(dh * 7.0, 0.4))
+	var sz := ts * 0.08
+	var di := int(dh * 1000.0) % 5
+
+	if h > 0.88:
+		var dx2 := o.x + float(x) * ts + ts * (0.15 + fmod(dh * 3.0, 0.4))
+		var dy2 := o.y + float(y) * ts + ts * (0.55 + fmod(dh * 5.0, 0.3))
+		_draw_single_deco(dx2, dy2, sz, (di + 2) % 5)
+
+	_draw_single_deco(dx, dy, sz, di)
+
+
+func _draw_single_deco(dx: float, dy: float, sz: float, di: int) -> void:
+	match _theme:
+		"grassland":
+			match di:
+				0: draw_circle(Vector2(dx, dy), sz, Color(1.0, 0.92, 0.20, 0.85))
+				1: draw_circle(Vector2(dx, dy), sz * 0.9, Color(1.0, 0.55, 0.65, 0.8))
+				2: draw_circle(Vector2(dx, dy), sz * 0.6, Color(0.60, 0.50, 0.38, 0.5))
+				3:
+					draw_circle(Vector2(dx, dy), sz * 1.3, Color(0.30, 0.62, 0.18, 0.45))
+					draw_circle(Vector2(dx + sz, dy - sz * 0.5), sz, Color(0.35, 0.68, 0.22, 0.4))
+				_: draw_circle(Vector2(dx, dy), sz * 0.8, Color(0.98, 0.98, 1.0, 0.75))
+		"tundra":
+			match di:
+				0: draw_circle(Vector2(dx, dy), sz * 0.5, Color(1.0, 1.0, 1.0, 0.6))
+				1:
+					draw_circle(Vector2(dx, dy), sz * 1.2, Color(0.85, 0.90, 0.98, 0.3))
+					draw_circle(Vector2(dx, dy), sz * 0.5, Color(1.0, 1.0, 1.0, 0.5))
+				_: draw_circle(Vector2(dx, dy), sz * 0.4, Color(0.75, 0.85, 1.0, 0.4))
+		"desert":
+			match di:
+				0: draw_circle(Vector2(dx, dy), sz * 0.6, Color(0.70, 0.58, 0.38, 0.5))
+				1:
+					draw_rect(Rect2(dx - sz * 0.3, dy - sz * 2.0, sz * 0.6, sz * 2.5), Color(0.40, 0.65, 0.25, 0.6))
+					draw_circle(Vector2(dx, dy - sz * 2.2), sz * 0.8, Color(0.35, 0.58, 0.20, 0.5))
+				2: draw_circle(Vector2(dx, dy), sz * 0.5, Color(0.82, 0.72, 0.50, 0.4))
+				_: draw_rect(Rect2(dx - sz, dy - sz * 0.3, sz * 2.2, sz * 0.5), Color(0.62, 0.50, 0.35, 0.35))
+		"volcano":
+			var ep := 0.5 + 0.5 * sin(_anim_time * 5.0 + dx * 0.1)
+			match di:
+				0: draw_circle(Vector2(dx, dy), sz * 0.7, Color(1.0, 0.50, 0.12, 0.5 * ep + 0.2))
+				1: draw_circle(Vector2(dx, dy), sz * 0.5, Color(1.0, 0.85, 0.20, 0.4 * ep + 0.1))
+				_: draw_circle(Vector2(dx, dy), sz * 0.4, Color(0.55, 0.45, 0.40, 0.35))
+		_:
+			if di < 2:
+				draw_circle(Vector2(dx, dy), sz * 0.5, Color(0.50, 0.50, 0.50, 0.25))
+
+
+func _draw_water_edges(x: int, y: int, o: Vector2, ts: float) -> void:
+	var foam := Color(0.80, 0.92, 1.0, 0.45)
+	var w := ts * 0.08
+	if y > 0 and logic.grid[x][y - 1] != GameLogic.Cell.WATER:
+		draw_rect(Rect2(o.x + x * ts, o.y + y * ts, ts, w), foam)
+	if y < logic.rows - 1 and logic.grid[x][y + 1] != GameLogic.Cell.WATER:
+		draw_rect(Rect2(o.x + x * ts, o.y + (y + 1) * ts - w, ts, w), foam)
+	if x > 0 and logic.grid[x - 1][y] != GameLogic.Cell.WATER:
+		draw_rect(Rect2(o.x + x * ts, o.y + y * ts, w, ts), foam)
+	if x < logic.cols - 1 and logic.grid[x + 1][y] != GameLogic.Cell.WATER:
+		draw_rect(Rect2(o.x + (x + 1) * ts - w, o.y + y * ts, w, ts), foam)
+
+
+func _draw_conveyor(x: int, y: int, ft: int, o: Vector2, ts: float) -> void:
+	var cx := o.x + (float(x) + 0.5) * ts
+	var cy := o.y + (float(y) + 0.5) * ts
+	var arrow_col := Color(0.9, 0.9, 0.3, 0.55)
+	var sz := ts * 0.15
+	var scroll := fmod(_anim_time * 2.0, 1.0)
+	for k in range(3):
+		var off := (float(k) / 3.0 + scroll) * ts * 0.6 - ts * 0.3
+		var px := cx
+		var py := cy
+		match ft:
+			GameLogic.Floor.CONV_N: py = cy - off
+			GameLogic.Floor.CONV_S: py = cy + off
+			GameLogic.Floor.CONV_E: px = cx + off
+			GameLogic.Floor.CONV_W: px = cx - off
+		if px > o.x + x * ts and px < o.x + (x + 1) * ts and py > o.y + y * ts and py < o.y + (y + 1) * ts:
+			draw_circle(Vector2(px, py), sz, arrow_col)
+
+
+func _draw_creature(cr: GameLogic.CreatureData, o: Vector2, ts: float) -> void:
+	var bob := sin(_anim_time * 3.5 + float(cr.gx) * 2.0) * ts * 0.05
+	var m := ts * 0.2
+	var px := o.x + float(cr.gx) * ts + m
+	var py := o.y + float(cr.gy) * ts + m + bob
+	var sz := ts - m * 2.0
+	var tex: ImageTexture = _sprites.get_tex("creature")
+	if tex:
+		draw_texture_rect(tex, Rect2(px, py, sz, sz), false)
+	else:
+		draw_rect(Rect2(px, py, sz, sz), Color(0.85, 0.65, 0.30))
+		draw_circle(Vector2(px + sz * 0.3, py + sz * 0.3), sz * 0.1, Color(0.1, 0.1, 0.1))
+		draw_circle(Vector2(px + sz * 0.7, py + sz * 0.3), sz * 0.1, Color(0.1, 0.1, 0.1))
+
+
+func _draw_torch_glow(o: Vector2, ts: float) -> void:
+	for pair in logic.portals:
+		for pos in pair:
+			var p: Vector2i = pos
+			var cx := o.x + (float(p.x) + 0.5) * ts
+			var cy := o.y + (float(p.y) + 0.5) * ts
+			var pulse := 0.7 + 0.3 * sin(_anim_time * 4.0 + float(p.x) * 1.5)
+			var r := ts * 2.5 * pulse
+			draw_circle(Vector2(cx, cy), r, Color(1.0, 0.6, 0.2, 0.06 * pulse))
+			draw_circle(Vector2(cx, cy), r * 0.5, Color(1.0, 0.5, 0.15, 0.08 * pulse))
+
+
+func _draw_particles(o: Vector2, ts: float) -> void:
+	for p_item in _weather_particles:
+		var p: Particle = p_item
+		var alpha := clampf(p.life / p.max_life, 0.0, 1.0)
+		var col := Color(p.color.r, p.color.g, p.color.b, p.color.a * alpha)
+		draw_circle(Vector2(p.x, p.y), p.size, col)
+
+	for p_item in _debris_particles:
+		var p: Particle = p_item
+		var alpha := clampf(p.life / p.max_life, 0.0, 1.0)
+		var col := Color(p.color.r, p.color.g, p.color.b, alpha)
+		draw_rect(Rect2(p.x - p.size * 0.5, p.y - p.size * 0.5, p.size, p.size), col)
+
+
+func _draw_blizzard_fog(o: Vector2, ts: float) -> void:
+	var gw := logic.cols * ts
+	var gh := logic.rows * ts
+	var fog_alpha := 0.6 + 0.15 * sin(_anim_time * 2.0)
+	draw_rect(Rect2(o.x, o.y, gw, gh), Color(0.75, 0.82, 0.92, fog_alpha * 0.5))
+
+	var players: Array = [logic.p1]
+	if is_vs_npc:
+		for np in npc_players:
+			players.append(np)
+	else:
+		players.append(logic.p2)
+	for pl_item in players:
+		var pl: GameLogic.PlayerData = pl_item
+		if not pl.alive:
+			continue
+		var px := o.x + pl.gx * ts + ts * 0.5
+		var py := o.y + pl.gy * ts + ts * 0.5
+		var view_r := ts * 3.0
+		for ring in range(6):
+			var r := view_r + float(ring) * ts * 0.4
+			var alpha := float(ring) / 6.0 * 0.3
+			draw_arc(Vector2(px, py), r, 0.0, TAU, 32, Color(0.85, 0.90, 0.98, alpha), ts * 0.5)

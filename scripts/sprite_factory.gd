@@ -63,6 +63,7 @@ func _generate_all() -> void:
 	_gen_shield_aura()
 	_gen_terrain_tiles()
 	_gen_theme_tiles()
+	_gen_creature()
 
 
 # ── Character sprites ────────────────────
@@ -389,7 +390,22 @@ func _gen_shield_aura() -> void:
 	_cache["shield_aura"] = _rows_to_tex(rows)
 
 
+# ── Drawing helpers ──────────────────────
+
+
+func _px(img: Image, x: int, y: int, col: Color) -> void:
+	if x >= 0 and x < SZ and y >= 0 and y < SZ:
+		img.set_pixel(x, y, col)
+
+
+func _fill_r(img: Image, rx: int, ry: int, rw: int, rh: int, col: Color) -> void:
+	for yy in range(maxi(ry, 0), mini(ry + rh, SZ)):
+		for xx in range(maxi(rx, 0), mini(rx + rw, SZ)):
+			img.set_pixel(xx, yy, col)
+
+
 # ── Terrain tiles (universal) ────────────
+
 
 func _gen_terrain_tiles() -> void:
 	_cache["tile_water"] = _make_tile_water()
@@ -403,195 +419,498 @@ func _gen_terrain_tiles() -> void:
 
 func _make_tile_water() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var base := Color(0.15, 0.35, 0.65)
-	var light := Color(0.25, 0.50, 0.80)
-	var dark := Color(0.10, 0.25, 0.50)
+	var deep := Color(0.08, 0.38, 0.78)
+	var mid := Color(0.22, 0.55, 0.95)
 	for y in range(SZ):
 		for x in range(SZ):
-			var wave := sin((x + y) * 0.8) * 0.5 + 0.5
-			img.set_pixel(x, y, base.lerp(light if wave > 0.6 else dark, 0.3))
-	for x in range(SZ):
-		var wy: int = (x * 3 + 4) % SZ
-		if wy < SZ:
-			img.set_pixel(x, wy, Color(0.40, 0.65, 0.90, 0.7))
+			var g := float(y) / 15.0 * 0.4
+			var w := sin(float(x) * 0.7 + float(y) * 0.3) * 0.12
+			img.set_pixel(x, y, deep.lerp(mid, clampf(g + w, 0.0, 1.0)))
+	var wave_c := Color(0.48, 0.75, 1.0)
+	for wi in range(3):
+		var by: int = 2 + wi * 5
+		for x in range(SZ):
+			var py: int = by + int(sin(float(x) * 0.8 + float(wi) * 2.2) * 1.5)
+			_px(img, x, clampi(py, 0, SZ - 1), wave_c)
+			_px(img, x, clampi(py + 1, 0, SZ - 1), mid.lerp(wave_c, 0.35))
+	var foam := Color(0.90, 0.97, 1.0)
+	for s in [[3, 1], [10, 4], [1, 8], [14, 6], [7, 12], [12, 14]]:
+		_px(img, s[0], s[1], foam)
 	return ImageTexture.create_from_image(img)
 
 
 func _make_tile_grass() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var base := Color(0.22, 0.45, 0.18)
-	img.fill(base)
-	var blade := Color(0.30, 0.58, 0.22)
-	var tip := Color(0.38, 0.68, 0.28)
-	for i in range(6):
-		var bx: int = (i * 5 + 2) % SZ
-		var by: int = SZ - 1
-		for j in range(4):
-			if by - j >= 0 and bx < SZ:
-				img.set_pixel(bx, by - j, blade if j < 3 else tip)
+	var base := Color(0.30, 0.65, 0.22)
+	var dark := Color(0.22, 0.52, 0.16)
+	var light := Color(0.42, 0.78, 0.30)
+	var tip := Color(0.52, 0.88, 0.38)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 1.2 + float(y) * 0.8) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(base, v))
+	var blades: Array = [[1, 15], [4, 15], [7, 15], [10, 15], [13, 15], [3, 9], [9, 10], [14, 8]]
+	for b in blades:
+		var bx: int = b[0]
+		var by: int = b[1]
+		for j in range(5):
+			var jc: Color = dark if j < 1 else (base if j < 3 else (light if j < 4 else tip))
+			_px(img, bx, by - j, jc)
+		_px(img, bx + 1, by - 3, light)
+	_px(img, 6, 4, Color(1.0, 0.92, 0.22))
+	_px(img, 7, 4, Color(1.0, 0.92, 0.22))
+	_px(img, 12, 2, Color(1.0, 0.50, 0.62))
+	_px(img, 2, 6, Color(0.98, 0.98, 1.0))
 	return ImageTexture.create_from_image(img)
 
 
 func _make_tile_snow() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var base := Color(0.82, 0.88, 0.94)
-	img.fill(base)
-	var flake := Color(0.95, 0.97, 1.0)
-	var shadow := Color(0.70, 0.76, 0.85)
-	for i in range(5):
-		var fx: int = (i * 7 + 3) % SZ
-		var fy: int = (i * 5 + 1) % SZ
-		if fx < SZ and fy < SZ:
-			img.set_pixel(fx, fy, flake)
+	var base := Color(0.92, 0.95, 0.99)
+	var shadow := Color(0.78, 0.85, 0.95)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 0.5 + float(y) * 0.3) * 0.5 + 0.5
+			img.set_pixel(x, y, shadow.lerp(base, v * 0.6 + 0.4))
+	var sparkle := Color(1.0, 1.0, 1.0)
+	for s in [[3, 2], [10, 5], [6, 9], [14, 3], [1, 12], [8, 14], [13, 11]]:
+		_px(img, s[0], s[1], sparkle)
 	for x in range(SZ):
-		if x % 4 == 0:
-			img.set_pixel(x, SZ - 1, shadow)
+		if x % 3 == 0:
+			_px(img, x, SZ - 1, shadow)
+			_px(img, x, SZ - 2, shadow.lerp(base, 0.5))
 	return ImageTexture.create_from_image(img)
 
 
 func _make_tile_sand() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var base := Color(0.82, 0.72, 0.48)
-	img.fill(base)
-	var light := Color(0.88, 0.78, 0.55)
-	var dark := Color(0.72, 0.62, 0.40)
+	var base := Color(0.94, 0.82, 0.55)
+	var light := Color(1.0, 0.90, 0.65)
+	var dark := Color(0.84, 0.72, 0.45)
 	for y in range(SZ):
 		for x in range(SZ):
-			if (x + y * 3) % 7 == 0:
-				img.set_pixel(x, y, light)
-			elif (x * 2 + y) % 11 == 0:
-				img.set_pixel(x, y, dark)
+			var ripple := sin(float(x) * 0.4 + float(y) * 0.9) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(light, ripple))
+	for wi in range(4):
+		var ry: int = 2 + wi * 4
+		for x in range(SZ):
+			var py: int = ry + int(sin(float(x) * 0.5 + float(wi) * 1.8) * 0.8)
+			_px(img, x, clampi(py, 0, SZ - 1), light)
+	var pebble := Color(0.72, 0.62, 0.42)
+	for s in [[4, 5], [11, 3], [7, 10], [14, 12], [2, 13]]:
+		_px(img, s[0], s[1], pebble)
 	return ImageTexture.create_from_image(img)
 
 
 func _make_tile_lava() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var base := Color(0.85, 0.25, 0.05)
-	var hot := Color(1.0, 0.65, 0.10)
-	var dark := Color(0.55, 0.12, 0.02)
-	for y in range(SZ):
+	var crust := Color(0.38, 0.12, 0.06)
+	var hot := Color(1.0, 0.58, 0.10)
+	var bright := Color(1.0, 0.88, 0.25)
+	var glow := Color(0.92, 0.32, 0.06)
+	img.fill(crust)
+	for ci in range(4):
+		var cx: int = 2 + ci * 4
+		for y in range(SZ):
+			var ox: int = cx + int(sin(float(y) * 0.6 + float(ci) * 1.5) * 1.8)
+			_px(img, ox, y, glow)
+			_px(img, ox + 1, y, hot)
+	for ci in range(3):
+		var cy: int = 3 + ci * 5
 		for x in range(SZ):
-			var t := sin(x * 0.6 + y * 0.4) * 0.5 + 0.5
-			if t > 0.7:
-				img.set_pixel(x, y, hot)
-			elif t < 0.3:
-				img.set_pixel(x, y, dark)
-			else:
-				img.set_pixel(x, y, base)
+			var oy: int = cy + int(sin(float(x) * 0.5 + float(ci) * 2.0) * 1.5)
+			_px(img, x, oy, glow)
+			_px(img, x, oy + 1, hot)
+	for s in [[4, 4], [10, 7], [7, 12], [13, 3], [2, 10]]:
+		_px(img, s[0], s[1], bright)
+		_px(img, s[0] + 1, s[1], bright)
 	return ImageTexture.create_from_image(img)
 
 
 func _make_tile_ice() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var base := Color(0.55, 0.72, 0.88)
-	img.fill(base)
-	var shine := Color(0.75, 0.88, 0.98)
-	img.set_pixel(4, 5, shine)
-	img.set_pixel(5, 5, shine)
-	img.set_pixel(10, 10, shine)
-	img.set_pixel(11, 10, shine)
+	var base := Color(0.70, 0.88, 1.0)
+	var deep := Color(0.52, 0.75, 0.95)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 0.4 + float(y) * 0.6) * 0.5 + 0.5
+			img.set_pixel(x, y, deep.lerp(base, v))
+	var shine := Color(0.95, 0.98, 1.0)
+	for i in range(SZ):
+		_px(img, i, i, shine)
+		_px(img, SZ - 1 - i, i, shine)
+	for s in [[3, 5], [4, 5], [10, 10], [11, 10], [7, 3], [8, 12]]:
+		_px(img, s[0], s[1], Color(1.0, 1.0, 1.0))
 	return ImageTexture.create_from_image(img)
 
 
 func _make_tile_mud() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var base := Color(0.30, 0.22, 0.14)
-	img.fill(base)
-	var dark := Color(0.22, 0.16, 0.10)
-	for i in range(4):
-		var mx: int = (i * 5 + 2) % SZ
-		var my: int = (i * 4 + 3) % SZ
-		if mx < SZ and my < SZ:
-			img.set_pixel(mx, my, dark)
-			if mx + 1 < SZ:
-				img.set_pixel(mx + 1, my, dark)
+	var base := Color(0.45, 0.34, 0.22)
+	var dark := Color(0.32, 0.24, 0.15)
+	var wet := Color(0.50, 0.40, 0.30)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 0.9 + float(y) * 0.6) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(base, v))
+	var puddle := Color(0.38, 0.30, 0.20)
+	for s in [[3, 4], [4, 4], [4, 5], [10, 8], [11, 8], [11, 9], [7, 13], [8, 13]]:
+		_px(img, s[0], s[1], puddle)
+	for s in [[5, 3], [12, 7], [2, 11], [14, 2]]:
+		_px(img, s[0], s[1], wet)
 	return ImageTexture.create_from_image(img)
 
 
 # ── Per-theme tiles ─────────────────────
 
+
 func _gen_theme_tiles() -> void:
-	_gen_theme("classic", Color(0.22, 0.24, 0.30), Color(0.78, 0.52, 0.28),
-		Color(0.12, 0.13, 0.16), Color(0.50, 0.52, 0.58))
-	_gen_theme("grassland", Color(0.38, 0.50, 0.32), Color(0.60, 0.45, 0.25),
-		Color(0.22, 0.35, 0.18), Color(0.45, 0.48, 0.42))
-	_gen_theme("tundra", Color(0.55, 0.60, 0.68), Color(0.62, 0.68, 0.75),
-		Color(0.78, 0.84, 0.90), Color(0.48, 0.52, 0.58))
-	_gen_theme("desert", Color(0.58, 0.48, 0.32), Color(0.65, 0.55, 0.38),
-		Color(0.82, 0.72, 0.48), Color(0.52, 0.45, 0.35))
-	_gen_theme("volcano", Color(0.18, 0.14, 0.12), Color(0.38, 0.25, 0.18),
-		Color(0.25, 0.18, 0.15), Color(0.35, 0.30, 0.28))
+	_gen_classic_theme()
+	_gen_grassland_theme()
+	_gen_tundra_theme()
+	_gen_desert_theme()
+	_gen_volcano_theme()
 
 
-func _gen_theme(theme: String, wall_col: Color, crate_col: Color,
-		ground_col: Color, iron_col: Color) -> void:
-	_cache["wall_" + theme] = _make_solid_tile(wall_col, wall_col.darkened(0.2))
-	_cache["crate_" + theme] = _make_crate_tile(crate_col)
-	_cache["ground_" + theme] = _make_ground_tile(ground_col)
-	_cache["iron_" + theme] = _make_iron_tile(iron_col)
-	_cache["shrink_" + theme] = _make_solid_tile(Color(0.65, 0.12, 0.15), Color(0.50, 0.08, 0.10))
+func _gen_classic_theme() -> void:
+	_cache["wall_classic"] = _make_brick_wall(
+		Color(0.50, 0.55, 0.65), Color(0.30, 0.32, 0.40))
+	_cache["crate_classic"] = _make_wood_crate(Color(0.85, 0.60, 0.32))
+	_cache["ground_classic"] = _make_floor_tile(
+		Color(0.28, 0.30, 0.38), Color(0.35, 0.37, 0.45))
+	_cache["iron_classic"] = _make_iron_plate(
+		Color(0.60, 0.64, 0.72), Color(0.40, 0.42, 0.50))
+	_cache["shrink_classic"] = _make_shrink_wall()
 
 
-func _make_solid_tile(col: Color, shade: Color) -> ImageTexture:
+func _gen_grassland_theme() -> void:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	img.fill(col)
-	for x in range(SZ):
-		img.set_pixel(x, 0, shade)
-		img.set_pixel(x, SZ - 1, shade)
+	_draw_bricks(img, Color(0.55, 0.62, 0.52), Color(0.35, 0.38, 0.32))
+	for s in [[2, 2], [3, 2], [2, 3], [10, 10], [11, 10], [10, 11], [6, 5], [13, 3]]:
+		_px(img, s[0], s[1], Color(0.38, 0.75, 0.30))
+	for s in [[3, 3], [11, 11], [7, 5]]:
+		_px(img, s[0], s[1], Color(0.45, 0.82, 0.35))
+	_cache["wall_grassland"] = ImageTexture.create_from_image(img)
+	_cache["crate_grassland"] = _make_vine_crate()
+	_cache["ground_grassland"] = _make_grass_floor()
+	_cache["iron_grassland"] = _make_iron_plate(
+		Color(0.52, 0.58, 0.50), Color(0.38, 0.45, 0.35))
+	_cache["shrink_grassland"] = _make_shrink_wall()
+
+
+func _make_vine_crate() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	_draw_wood_planks(img, Color(0.75, 0.58, 0.35))
+	var vine := Color(0.32, 0.72, 0.25)
+	for v in [[1, 2], [1, 3], [2, 4], [2, 5], [3, 6], [3, 7], [2, 8]]:
+		_px(img, v[0], v[1], vine)
+	_px(img, 2, 3, Color(0.28, 0.60, 0.20))
+	_px(img, 1, 4, Color(0.35, 0.78, 0.28))
+	return ImageTexture.create_from_image(img)
+
+
+func _make_grass_floor() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var base := Color(0.35, 0.65, 0.25)
+	var light := Color(0.45, 0.78, 0.32)
+	var dark := Color(0.26, 0.52, 0.18)
+	var dirt := Color(0.58, 0.45, 0.30)
 	for y in range(SZ):
-		img.set_pixel(0, y, shade)
-		img.set_pixel(SZ - 1, y, shade)
+		for x in range(SZ):
+			var v := sin(float(x) * 0.8 + float(y) * 0.5) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(light, v * 0.6 + 0.2))
+	for s in [[7, 7], [8, 7], [7, 8], [8, 8], [9, 8]]:
+		_px(img, s[0], s[1], dirt)
 	return ImageTexture.create_from_image(img)
 
 
-func _make_crate_tile(col: Color) -> ImageTexture:
+func _gen_tundra_theme() -> void:
+	_cache["wall_tundra"] = _make_ice_crystal_wall()
+	_cache["crate_tundra"] = _make_snow_crate()
+	_cache["ground_tundra"] = _make_snow_floor()
+	_cache["iron_tundra"] = _make_iron_plate(
+		Color(0.65, 0.72, 0.82), Color(0.48, 0.52, 0.62))
+	_cache["shrink_tundra"] = _make_shrink_wall()
+
+
+func _make_ice_crystal_wall() -> ImageTexture:
 	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var light := col.lightened(0.15)
-	var dark := col.darkened(0.25)
-	img.fill(col)
+	var base := Color(0.58, 0.75, 0.95)
+	var crystal := Color(0.80, 0.92, 1.0)
+	var deep := Color(0.40, 0.58, 0.80)
+	img.fill(base)
 	for i in range(SZ):
-		img.set_pixel(i, 0, dark)
-		img.set_pixel(i, SZ - 1, dark)
-		img.set_pixel(0, i, dark)
-		img.set_pixel(SZ - 1, i, dark)
-	for i in range(2, SZ - 2):
-		img.set_pixel(i, SZ / 2, dark)
-		img.set_pixel(SZ / 2, i, dark)
-	img.set_pixel(3, 3, light)
-	img.set_pixel(4, 3, light)
-	img.set_pixel(3, 4, light)
-	return ImageTexture.create_from_image(img)
-
-
-func _make_ground_tile(col: Color) -> ImageTexture:
-	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	img.fill(col)
-	var accent := col.lightened(0.08)
-	for i in range(3):
-		var gx: int = (i * 7 + 2) % SZ
-		var gy: int = (i * 5 + 4) % SZ
-		if gx < SZ and gy < SZ:
-			img.set_pixel(gx, gy, accent)
-	return ImageTexture.create_from_image(img)
-
-
-func _make_iron_tile(col: Color) -> ImageTexture:
-	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
-	var dark := col.darkened(0.2)
-	var rivet := Color(0.35, 0.35, 0.40)
-	img.fill(col)
+		_px(img, 8 + i, i, crystal)
+		_px(img, 7 - i, i, crystal)
+		_px(img, 8 + i, SZ - 1 - i, crystal)
+		_px(img, 7 - i, SZ - 1 - i, crystal)
+	for s in [[4, 4], [11, 4], [4, 11], [11, 11], [8, 8]]:
+		_px(img, s[0], s[1], Color(1.0, 1.0, 1.0))
 	for i in range(SZ):
-		img.set_pixel(i, 0, dark)
-		img.set_pixel(i, SZ - 1, dark)
-		img.set_pixel(0, i, dark)
-		img.set_pixel(SZ - 1, i, dark)
+		_px(img, i, 0, deep)
+		_px(img, i, SZ - 1, deep)
+		_px(img, 0, i, deep)
+		_px(img, SZ - 1, i, deep)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_snow_crate() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	_draw_wood_planks(img, Color(0.58, 0.50, 0.42))
+	var snow := Color(0.94, 0.96, 1.0)
+	var snow_s := Color(0.80, 0.86, 0.94)
+	_fill_r(img, 1, 1, 14, 4, snow)
+	for x in range(1, 15):
+		_px(img, x, 5, snow_s)
+	_px(img, 3, 5, snow)
+	_px(img, 3, 6, snow_s)
+	_px(img, 10, 5, snow)
+	_px(img, 10, 6, snow_s)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_snow_floor() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var shadow := Color(0.78, 0.85, 0.95)
+	var bright := Color(0.96, 0.98, 1.0)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 0.6 + float(y) * 0.4) * 0.5 + 0.5
+			img.set_pixel(x, y, shadow.lerp(bright, v * 0.5 + 0.3))
+	for s in [[5, 3], [12, 7], [3, 11], [9, 2], [14, 13]]:
+		_px(img, s[0], s[1], Color(1.0, 1.0, 1.0))
+	return ImageTexture.create_from_image(img)
+
+
+func _gen_desert_theme() -> void:
+	_cache["wall_desert"] = _make_sandstone_wall()
+	_cache["crate_desert"] = _make_clay_crate()
+	_cache["ground_desert"] = _make_sand_floor()
+	_cache["iron_desert"] = _make_iron_plate(
+		Color(0.65, 0.55, 0.40), Color(0.50, 0.40, 0.30))
+	_cache["shrink_desert"] = _make_shrink_wall()
+
+
+func _make_sandstone_wall() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	_draw_bricks(img, Color(0.85, 0.72, 0.48), Color(0.68, 0.55, 0.35))
+	var mark := Color(0.75, 0.62, 0.38)
+	_px(img, 3, 3, mark)
+	_px(img, 4, 2, mark)
+	_px(img, 5, 3, mark)
+	_px(img, 10, 10, mark)
+	_px(img, 11, 9, mark)
+	_px(img, 12, 10, mark)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_clay_crate() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var clay := Color(0.82, 0.58, 0.35)
+	var dark := Color(0.62, 0.42, 0.25)
+	var light := Color(0.92, 0.70, 0.45)
+	img.fill(clay)
+	for i in range(SZ):
+		_px(img, i, 0, dark)
+		_px(img, i, SZ - 1, dark)
+		_px(img, 0, i, dark)
+		_px(img, SZ - 1, i, dark)
+	for x in range(1, SZ - 1):
+		_px(img, x, 5, dark)
+		_px(img, x, 10, dark)
+	_px(img, 7, 7, dark)
+	_px(img, 8, 7, dark)
+	_px(img, 8, 8, dark)
+	_px(img, 3, 3, light)
+	_px(img, 4, 3, light)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_sand_floor() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var light := Color(0.98, 0.88, 0.62)
+	var dark := Color(0.82, 0.70, 0.45)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 0.5 + float(y) * 0.8) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(light, v * 0.5 + 0.25))
+	return ImageTexture.create_from_image(img)
+
+
+func _gen_volcano_theme() -> void:
+	_cache["wall_volcano"] = _make_obsidian_wall()
+	_cache["crate_volcano"] = _make_charred_crate()
+	_cache["ground_volcano"] = _make_basalt_floor()
+	_cache["iron_volcano"] = _make_iron_plate(
+		Color(0.48, 0.40, 0.38), Color(0.32, 0.25, 0.22))
+	_cache["shrink_volcano"] = _make_shrink_wall()
+
+
+func _make_obsidian_wall() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var obsidian := Color(0.18, 0.14, 0.16)
+	var edge := Color(0.10, 0.08, 0.10)
+	img.fill(obsidian)
+	for i in range(SZ):
+		_px(img, i, 0, edge)
+		_px(img, i, SZ - 1, edge)
+		_px(img, 0, i, edge)
+		_px(img, SZ - 1, i, edge)
+	var magma := Color(1.0, 0.48, 0.10)
+	var glow := Color(0.88, 0.30, 0.06)
+	for v in [[3, 2], [4, 3], [5, 4], [5, 5], [6, 6], [7, 7]]:
+		_px(img, v[0], v[1], magma)
+	for v in [[11, 9], [10, 10], [9, 11], [9, 12], [8, 13]]:
+		_px(img, v[0], v[1], magma)
+	for v in [[4, 2], [6, 5], [10, 9], [8, 12]]:
+		_px(img, v[0], v[1], glow)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_charred_crate() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	_draw_wood_planks(img, Color(0.30, 0.20, 0.14))
+	var ember := Color(1.0, 0.52, 0.12)
+	var ember2 := Color(0.92, 0.38, 0.10)
+	for s in [[3, 4], [10, 6], [5, 11], [12, 13]]:
+		_px(img, s[0], s[1], ember)
+	for s in [[4, 5], [11, 7]]:
+		_px(img, s[0], s[1], ember2)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_basalt_floor() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var base := Color(0.25, 0.20, 0.18)
+	var dark := Color(0.17, 0.13, 0.12)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 1.0 + float(y) * 0.7) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(base, v))
+	var ember := Color(1.0, 0.48, 0.10)
+	for s in [[5, 3], [11, 8], [3, 12], [14, 5]]:
+		_px(img, s[0], s[1], ember)
+	var crack := Color(0.32, 0.26, 0.22)
+	for s in [[7, 4], [8, 5], [9, 6], [4, 10], [5, 11]]:
+		_px(img, s[0], s[1], crack)
+	return ImageTexture.create_from_image(img)
+
+
+# ── Shared tile pattern helpers ──────────
+
+
+func _draw_bricks(img: Image, stone: Color, mortar: Color) -> void:
+	var light := stone.lightened(0.15)
+	var dark := stone.darkened(0.18)
+	img.fill(mortar)
+	_fill_r(img, 0, 0, 7, 7, stone)
+	_fill_r(img, 8, 0, 7, 7, stone)
+	_fill_r(img, 0, 8, 3, 7, stone)
+	_fill_r(img, 4, 8, 7, 7, stone)
+	_fill_r(img, 12, 8, 4, 7, stone)
+	for x in range(7):
+		_px(img, x, 0, light)
+	for x in range(8, 15):
+		_px(img, x, 0, light)
+	for x in range(3):
+		_px(img, x, 8, light)
+	for x in range(4, 11):
+		_px(img, x, 8, light)
+	for x in range(12, 16):
+		_px(img, x, 8, light)
+	for x in range(7):
+		_px(img, x, 6, dark)
+	for x in range(8, 15):
+		_px(img, x, 6, dark)
+	for x in range(3):
+		_px(img, x, 14, dark)
+	for x in range(4, 11):
+		_px(img, x, 14, dark)
+	for x in range(12, 16):
+		_px(img, x, 14, dark)
+
+
+func _draw_wood_planks(img: Image, wood: Color) -> void:
+	var light := wood.lightened(0.12)
+	var dark := wood.darkened(0.22)
+	var band := wood.darkened(0.35)
+	img.fill(wood)
+	for i in range(SZ):
+		_px(img, i, 0, dark)
+		_px(img, i, SZ - 1, dark)
+		_px(img, 0, i, dark)
+		_px(img, SZ - 1, i, dark)
+	for x in range(1, SZ - 1):
+		_px(img, x, 7, dark)
+	for y in range(1, SZ - 1):
+		_px(img, 7, y, dark)
+	for d in range(SZ):
+		_px(img, d, d, band)
+		_px(img, SZ - 1 - d, d, band)
+	_px(img, 3, 3, light)
+	_px(img, 4, 3, light)
+	_px(img, 10, 10, light)
+	_px(img, 11, 10, light)
+
+
+func _make_brick_wall(stone: Color, mortar: Color) -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	_draw_bricks(img, stone, mortar)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_wood_crate(wood: Color) -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	_draw_wood_planks(img, wood)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_floor_tile(base: Color, accent: Color) -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var dark := base.darkened(0.1)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 0.7 + float(y) * 0.5) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(base, v * 0.4 + 0.3))
+	for s in [[4, 3], [11, 7], [7, 12], [2, 9], [14, 4]]:
+		_px(img, s[0], s[1], accent)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_iron_plate(metal: Color, rivet: Color) -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var light := metal.lightened(0.12)
+	var dark := metal.darkened(0.2)
+	img.fill(metal)
+	for i in range(SZ):
+		_px(img, i, 0, dark)
+		_px(img, i, SZ - 1, dark)
+		_px(img, 0, i, dark)
+		_px(img, SZ - 1, i, dark)
+		_px(img, i, 1, light)
 	for x in range(2, SZ - 2):
-		img.set_pixel(x, SZ / 2, dark)
-		img.set_pixel(SZ / 2, x, dark)
-	img.set_pixel(3, 3, rivet)
-	img.set_pixel(12, 3, rivet)
-	img.set_pixel(3, 12, rivet)
-	img.set_pixel(12, 12, rivet)
+		_px(img, x, SZ / 2, dark)
+		_px(img, SZ / 2, x, dark)
+	for s in [[3, 3], [12, 3], [3, 12], [12, 12]]:
+		_px(img, s[0], s[1], rivet)
+		_px(img, s[0] + 1, s[1], rivet)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_shrink_wall() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var base := Color(0.75, 0.14, 0.18)
+	var dark := Color(0.52, 0.10, 0.12)
+	var warn := Color(0.98, 0.28, 0.20)
+	img.fill(base)
+	for i in range(SZ):
+		_px(img, i, 0, dark)
+		_px(img, i, SZ - 1, dark)
+		_px(img, 0, i, dark)
+		_px(img, SZ - 1, i, dark)
+	for d in range(SZ):
+		_px(img, d, d, warn)
+		_px(img, SZ - 1 - d, d, warn)
 	return ImageTexture.create_from_image(img)
 
 
@@ -606,3 +925,33 @@ func _rows_to_tex(rows: Array) -> ImageTexture:
 			img.set_pixel(x, y, c)
 	var tex := ImageTexture.create_from_image(img)
 	return tex
+
+
+# ── Creature sprite ──────────────────────
+
+func _gen_creature() -> void:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	img.fill(T)
+	var body := Color(0.85, 0.65, 0.30)
+	var dark := Color(0.65, 0.48, 0.20)
+	var belly := Color(0.95, 0.85, 0.60)
+	var eye := Color(0.10, 0.10, 0.15)
+	# Body (round slime shape)
+	for y in range(5, 14):
+		for x in range(3, 13):
+			var dx := float(x) - 7.5
+			var dy := float(y) - 9.5
+			if dx * dx / 25.0 + dy * dy / 20.0 < 1.0:
+				var c := body.lerp(dark, clampf(float(y - 5) / 9.0, 0.0, 1.0) * 0.5)
+				if dy > 1.0 and absf(dx) < 3.5:
+					c = belly
+				_px(img, x, y, c)
+	# Eyes
+	_px(img, 6, 8, eye)
+	_px(img, 9, 8, eye)
+	_px(img, 6, 7, Color(1.0, 1.0, 1.0, 0.8))
+	_px(img, 9, 7, Color(1.0, 1.0, 1.0, 0.8))
+	# Mouth
+	_px(img, 7, 10, dark)
+	_px(img, 8, 10, dark)
+	_cache["creature"] = ImageTexture.create_from_image(img)
