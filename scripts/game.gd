@@ -31,6 +31,20 @@ var npc_count: int = 1
 var npcs: Array = []
 var npc_players: Array = []
 var _current_map: Dictionary = {}
+var _sprites: SpriteFactory
+
+const PLAYER_SPRITE_KEYS: Array[String] = ["p1", "p2"]
+const NPC_SPRITE_KEYS: Array[String] = ["npc0", "npc1", "npc2"]
+
+const PICKUP_SPRITE_MAP: Dictionary = {
+	GameLogic.Pickup.BOMB_UP: "item_bomb_up",
+	GameLogic.Pickup.FIRE_UP: "item_fire_up",
+	GameLogic.Pickup.SPEED_UP: "item_speed",
+	GameLogic.Pickup.KICK: "item_kick",
+	GameLogic.Pickup.REMOTE: "item_remote",
+	GameLogic.Pickup.SHIELD: "item_shield",
+	GameLogic.Pickup.SLOW_CURSE: "item_curse",
+}
 
 class ToastItem:
 	var text: String
@@ -53,6 +67,7 @@ var _sfx: SFX
 func _ready() -> void:
 	_sfx = SFX.new()
 	add_child(_sfx)
+	_sprites = SpriteFactory.get_instance()
 
 	logic = GameLogic.new()
 
@@ -512,21 +527,23 @@ func _draw() -> void:
 		var bd: GameLogic.BombData = b
 		_draw_bomb(bd, o, ts)
 
+	var expl_tex: ImageTexture = _sprites.get_tex("explosion")
 	for e in L.explosions:
 		var ex: GameLogic.ExplData = e
 		var t := ex.ttl / GameLogic.EXPLOSION_TTL
-		var ins := ts * 0.25 * (1.0 - t)
-		draw_rect(
-			Rect2(o.x + ex.gx * ts + ins, o.y + ex.gy * ts + ins, ts - ins * 2.0, ts - ins * 2.0),
-			Color(1.0, 0.85 * t, 0.15 * t, 0.85)
-		)
+		var ins := ts * 0.12 * (1.0 - t)
+		var r := Rect2(o.x + ex.gx * ts + ins, o.y + ex.gy * ts + ins, ts - ins * 2.0, ts - ins * 2.0)
+		if expl_tex:
+			draw_texture_rect(expl_tex, r, false, Color(1.0, 1.0, 1.0, 0.7 + 0.3 * t))
+		else:
+			draw_rect(r, Color(1.0, 0.85 * t, 0.15 * t, 0.85))
 
-	_draw_player(L.p1, Color(0.35, 0.75, 1.0))
+	_draw_player_sprite(L.p1, "p1")
 	if is_vs_npc:
 		for i in range(npc_players.size()):
-			_draw_player(npc_players[i], NPC_COLORS[i % NPC_COLORS.size()])
+			_draw_player_sprite(npc_players[i], NPC_SPRITE_KEYS[i % NPC_SPRITE_KEYS.size()])
 	else:
-		_draw_player(L.p2, Color(1.0, 0.52, 0.38))
+		_draw_player_sprite(L.p2, "p2")
 
 
 func _draw_portal(pair: Array, o: Vector2, ts: float) -> void:
@@ -548,79 +565,67 @@ func _draw_portal(pair: Array, o: Vector2, ts: float) -> void:
 
 func _draw_bomb(bd: GameLogic.BombData, o: Vector2, ts: float) -> void:
 	var pulse := 0.5 + 0.5 * sin(bd.time * 14.0)
-	var inset := ts * 0.15 + pulse * ts * 0.05
+	var inset := ts * 0.08 + pulse * ts * 0.04
 	var rx := o.x + bd.gx * ts + inset
 	var ry := o.y + bd.gy * ts + inset
 	var sz := ts - inset * 2.0
-	draw_rect(Rect2(rx, ry, sz, sz), Color(0.05, 0.05, 0.06))
-	var inner := ts * 0.08
-	var core_color := CLR_PICKUP_REMOTE if bd.is_remote else Color(0.95, 0.35, 0.12)
-	draw_rect(Rect2(rx + inner, ry + inner, sz - inner * 2.0, sz - inner * 2.0), core_color)
+	var tex: ImageTexture = _sprites.get_tex("bomb")
+	if tex:
+		var tint := Color(0.85, 0.65, 1.0) if bd.is_remote else Color.WHITE
+		draw_texture_rect(tex, Rect2(rx, ry, sz, sz), false, tint)
+	else:
+		draw_rect(Rect2(rx, ry, sz, sz), Color(0.05, 0.05, 0.06))
 
 
 func _draw_pickup(pd: GameLogic.PickupData, o: Vector2, ts: float) -> void:
-	var m := ts * 0.28
-	var col: Color
-	match pd.kind:
-		GameLogic.Pickup.BOMB_UP: col = CLR_PICKUP_BOMB
-		GameLogic.Pickup.FIRE_UP: col = CLR_PICKUP_FIRE
-		GameLogic.Pickup.SPEED_UP: col = CLR_PICKUP_SPEED
-		GameLogic.Pickup.KICK: col = CLR_PICKUP_KICK
-		GameLogic.Pickup.REMOTE: col = CLR_PICKUP_REMOTE
-		GameLogic.Pickup.SHIELD: col = CLR_PICKUP_SHIELD
-		GameLogic.Pickup.SLOW_CURSE: col = CLR_PICKUP_CURSE
-		_: col = Color.WHITE
-	var bg := col.darkened(0.55)
-	draw_rect(Rect2(o.x + pd.gx * ts + m - 2.0, o.y + pd.gy * ts + m - 2.0,
-		ts - (m - 2.0) * 2.0, ts - (m - 2.0) * 2.0), bg)
-	draw_rect(Rect2(o.x + pd.gx * ts + m, o.y + pd.gy * ts + m,
-		ts - m * 2.0, ts - m * 2.0), col)
-	var cx := o.x + pd.gx * ts + ts * 0.5
-	var cy := o.y + pd.gy * ts + ts * 0.5
-	var dot := ts * 0.08
-	match pd.kind:
-		GameLogic.Pickup.BOMB_UP:
-			draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
-		GameLogic.Pickup.FIRE_UP:
-			draw_rect(Rect2(cx - dot * 2.5, cy - dot, dot * 5.0, dot * 2.0), Color.WHITE)
-			draw_rect(Rect2(cx - dot, cy - dot * 2.5, dot * 2.0, dot * 5.0), Color.WHITE)
-		GameLogic.Pickup.SPEED_UP:
-			draw_rect(Rect2(cx - dot * 1.5, cy - dot * 1.5, dot * 3.0, dot * 3.0), Color.WHITE)
-		GameLogic.Pickup.KICK:
-			draw_rect(Rect2(cx - dot * 2.5, cy - dot * 0.5, dot * 4.0, dot), Color.WHITE)
-			draw_rect(Rect2(cx + dot, cy - dot * 1.5, dot, dot * 3.0), Color.WHITE)
-		GameLogic.Pickup.REMOTE:
-			draw_rect(Rect2(cx - dot * 2.0, cy - dot * 2.0, dot * 4.0, dot * 4.0), Color.WHITE)
-			draw_rect(Rect2(cx - dot, cy - dot, dot * 2.0, dot * 2.0), col.darkened(0.3))
-			draw_rect(Rect2(cx - dot * 0.5, cy - dot * 0.5, dot, dot), Color.WHITE)
-		GameLogic.Pickup.SHIELD:
-			draw_rect(Rect2(cx - dot * 2.0, cy - dot * 2.5, dot * 4.0, dot * 2.0), Color.WHITE)
-			draw_rect(Rect2(cx - dot, cy - dot * 0.5, dot * 2.0, dot * 3.0), Color.WHITE)
-		GameLogic.Pickup.SLOW_CURSE:
-			draw_rect(Rect2(cx - dot * 2.0, cy - dot * 2.0, dot * 4.0, dot), Color.WHITE)
-			draw_rect(Rect2(cx - dot * 2.0, cy + dot, dot * 4.0, dot), Color.WHITE)
-			draw_rect(Rect2(cx - dot * 0.5, cy - dot * 2.0, dot, dot * 4.0), Color.WHITE)
+	var m := ts * 0.18
+	var bg_m := m - 3.0
+	var bg_col := Color(0.15, 0.15, 0.20, 0.75)
+	draw_rect(Rect2(o.x + pd.gx * ts + bg_m, o.y + pd.gy * ts + bg_m,
+		ts - bg_m * 2.0, ts - bg_m * 2.0), bg_col)
+	var key: String = PICKUP_SPRITE_MAP.get(pd.kind, "")
+	var tex: ImageTexture = _sprites.get_tex(key) if key != "" else null
+	if tex:
+		var bob := sin(Time.get_ticks_msec() * 0.005 + pd.gx * 1.3 + pd.gy * 2.1) * ts * 0.04
+		draw_texture_rect(tex, Rect2(o.x + pd.gx * ts + m, o.y + pd.gy * ts + m + bob,
+			ts - m * 2.0, ts - m * 2.0), false)
+	else:
+		var col: Color
+		match pd.kind:
+			GameLogic.Pickup.BOMB_UP: col = CLR_PICKUP_BOMB
+			GameLogic.Pickup.FIRE_UP: col = CLR_PICKUP_FIRE
+			GameLogic.Pickup.SPEED_UP: col = CLR_PICKUP_SPEED
+			GameLogic.Pickup.KICK: col = CLR_PICKUP_KICK
+			GameLogic.Pickup.REMOTE: col = CLR_PICKUP_REMOTE
+			GameLogic.Pickup.SHIELD: col = CLR_PICKUP_SHIELD
+			GameLogic.Pickup.SLOW_CURSE: col = CLR_PICKUP_CURSE
+			_: col = Color.WHITE
+		draw_rect(Rect2(o.x + pd.gx * ts + m, o.y + pd.gy * ts + m,
+			ts - m * 2.0, ts - m * 2.0), col)
 
 
-func _draw_player(pl: GameLogic.PlayerData, col: Color) -> void:
+func _draw_player_sprite(pl: GameLogic.PlayerData, sprite_key: String) -> void:
 	if not pl.alive:
 		return
 	var o := origin
 	var ts := tile_size
-	var m := ts * 0.2
-	var draw_col := col.darkened(0.35) if pl.slow_timer > 0.0 else col
+	var m := ts * 0.08
+	var px := o.x + pl.gx * ts + m
+	var py := o.y + pl.gy * ts + m
+	var sz := ts - m * 2.0
+
 	if pl.shield > 0:
-		var s := ts * 0.12
-		draw_rect(
-			Rect2(o.x + pl.gx * ts + m - s, o.y + pl.gy * ts + m - s,
-				ts - (m - s) * 2.0, ts - (m - s) * 2.0),
-			CLR_PICKUP_SHIELD.lerp(Color.WHITE, 0.3)
-		)
-	draw_rect(
-		Rect2(o.x + pl.gx * ts + m, o.y + pl.gy * ts + m, ts - m * 2.0, ts - m * 2.0),
-		draw_col
-	)
-	draw_rect(
-		Rect2(o.x + pl.gx * ts + m, o.y + pl.gy * ts + ts - m - 4.0, ts - m * 2.0, 4.0),
-		Color(0, 0, 0, 0.25)
-	)
+		var aura: ImageTexture = _sprites.get_tex("shield_aura")
+		if aura:
+			var s := ts * 0.12
+			draw_texture_rect(aura, Rect2(px - s, py - s, sz + s * 2.0, sz + s * 2.0), false)
+
+	var tex: ImageTexture = _sprites.get_tex(sprite_key)
+	if tex:
+		var tint := Color(0.5, 0.5, 0.6) if pl.slow_timer > 0.0 else Color.WHITE
+		draw_texture_rect(tex, Rect2(px, py, sz, sz), false, tint)
+	else:
+		var col := Color(0.35, 0.75, 1.0) if sprite_key == "p1" else Color(1.0, 0.52, 0.38)
+		draw_rect(Rect2(px, py, sz, sz), col)
+
+	draw_rect(Rect2(px, py + sz - 3.0, sz, 3.0), Color(0, 0, 0, 0.2))
