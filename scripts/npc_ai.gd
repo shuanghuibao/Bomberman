@@ -1,25 +1,25 @@
 class_name NpcAI
 extends RefCounted
 
-## Bomberman NPC — Easy difficulty
+## Bomberman NPC — state machine with difficulty tiers
 ##
-## Industry-standard state machine:
-##   IDLE  → brief pause, prevents re-entering danger
-##   WANDER → BFS walk toward nearest crate / random cell
-##   FLEE  → follow pre-computed full escape path cell-by-cell
+## IDLE  → brief pause, prevents re-entering danger
+## WANDER → BFS walk toward nearest crate / player / random cell
+## FLEE  → follow pre-computed full escape path cell-by-cell
 ##
-## Bomb + escape in the SAME tick (game.gd places bomb before move).
-## Only moves once per think cycle — no cached direction between ticks.
+## Difficulty: 0=Easy, 1=Medium, 2=Hard
 
 enum State { IDLE, WANDER, FLEE }
+enum Difficulty { EASY, MEDIUM, HARD }
 
-const THINK_INTERVAL := 0.25
+const THINK_INTERVALS: Array[float] = [0.25, 0.15, 0.10]
 const DIRS: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
 
 var _logic: GameLogic
 var _player: GameLogic.PlayerData
 var _rng := RandomNumberGenerator.new()
 var _timer: float = 0.0
+var _difficulty: int = Difficulty.EASY
 
 var _state: int = State.IDLE
 var _idle_time: float = 0.5
@@ -27,9 +27,10 @@ var _flee_path: Array[Vector2i] = []
 var _wander_target: Vector2i = Vector2i(-1, -1)
 
 
-func _init(logic: GameLogic, player: GameLogic.PlayerData) -> void:
+func _init(logic: GameLogic, player: GameLogic.PlayerData, difficulty: int = Difficulty.EASY) -> void:
 	_logic = logic
 	_player = player
+	_difficulty = difficulty
 	_rng.randomize()
 
 
@@ -42,7 +43,7 @@ func tick(dt: float) -> Dictionary:
 	_timer -= dt
 	if _timer > 0.0:
 		return {"dir": Vector2i.ZERO, "bomb": false}
-	_timer = THINK_INTERVAL
+	_timer = THINK_INTERVALS[_difficulty]
 	return _think()
 
 
@@ -64,7 +65,7 @@ func _think() -> Dictionary:
 
 	# ── IDLE ─────────────────────────────────
 	if _state == State.IDLE:
-		_idle_time -= THINK_INTERVAL
+		_idle_time -= THINK_INTERVALS[_difficulty]
 		if _idle_time > 0.0:
 			return {"dir": Vector2i.ZERO, "bomb": false}
 		_state = State.WANDER
@@ -113,6 +114,10 @@ func _do_wander(pos: Vector2i, gx: int, gy: int, danger: Array) -> Dictionary:
 		var bomb_result := _try_bomb_at(gx, gy, danger)
 		if bomb_result.size() > 0:
 			return bomb_result
+		if _difficulty >= Difficulty.MEDIUM and _is_near_opponent(gx, gy, _player.range_i + 1):
+			var bomb_r := _try_bomb_at(gx, gy, danger)
+			if bomb_r.size() > 0:
+				return bomb_r
 		_wander_target = _pick_wander_target(gx, gy)
 		if _wander_target == Vector2i(-1, -1):
 			return {"dir": Vector2i.ZERO, "bomb": false}
@@ -121,6 +126,10 @@ func _do_wander(pos: Vector2i, gx: int, gy: int, danger: Array) -> Dictionary:
 	if step == Vector2i.ZERO:
 		_wander_target = _random_reachable(gx, gy)
 		step = _bfs_first_step(gx, gy, _wander_target) if _wander_target != Vector2i(-1, -1) else Vector2i.ZERO
+
+	if _difficulty >= Difficulty.HARD and _player.has_remote:
+		_try_remote_detonate(gx, gy, danger)
+
 	return {"dir": step, "bomb": false}
 
 
@@ -159,9 +168,12 @@ func _has_bombable_neighbor(bx: int, by: int) -> bool:
 			if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
 				break
 			var c: int = _logic.grid[nx][ny]
-			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.SHRINK_WALL:
+			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.SHRINK_WALL or c == GameLogic.Cell.WATER:
 				break
-			if c == GameLogic.Cell.CRATE or c == GameLogic.Cell.IRON_CRATE:
+			if c == GameLogic.Cell.TIMED_WALL:
+				if not _logic.timed_wall_open.get(Vector2i(nx, ny), false):
+					break
+			if c == GameLogic.Cell.CRATE or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.MYSTERY_CRATE:
 				return true
 	return false
 
@@ -182,6 +194,8 @@ func _bfs_escape_path(sx: int, sy: int, danger: Array) -> Array[Vector2i]:
 				continue
 			if not _walkable_ignore_own_bomb(nv.x, nv.y):
 				continue
+			if _logic._gate_blocks(nv.x, nv.y, d.x, d.y):
+				continue
 			parent[nv] = cur
 			if not danger[nv.x][nv.y]:
 				return _build_path(parent, nv, start)
@@ -193,7 +207,13 @@ func _bfs_escape_path(sx: int, sy: int, danger: Array) -> Array[Vector2i]:
 func _walkable_ignore_own_bomb(gx: int, gy: int) -> bool:
 	if gx < 0 or gy < 0 or gx >= _logic.cols or gy >= _logic.rows:
 		return false
-	if _logic.grid[gx][gy] != GameLogic.Cell.EMPTY:
+	var c: int = _logic.grid[gx][gy]
+	if c == GameLogic.Cell.BRIDGE:
+		pass
+	elif c == GameLogic.Cell.TIMED_WALL:
+		if not _logic.timed_wall_open.get(Vector2i(gx, gy), false):
+			return false
+	elif c != GameLogic.Cell.EMPTY:
 		return false
 	var b: GameLogic.BombData = _logic.bomb_at(gx, gy)
 	if b != null:
@@ -234,6 +254,8 @@ func _bfs_first_step(sx: int, sy: int, target: Vector2i) -> Vector2i:
 				return p[0] - start if p.size() > 0 else Vector2i.ZERO
 			if not _logic.walkable_for(nv.x, nv.y, _player):
 				continue
+			if _logic._gate_blocks(nv.x, nv.y, d.x, d.y):
+				continue
 			visited[nv] = true
 			queue.append(nv)
 	return Vector2i.ZERO
@@ -242,16 +264,30 @@ func _bfs_first_step(sx: int, sy: int, target: Vector2i) -> Vector2i:
 # ── 目标选择 ─────────────────────────────
 
 func _pick_wander_target(gx: int, gy: int) -> Vector2i:
+	if _difficulty >= Difficulty.MEDIUM:
+		var pursue_chance := 0.35 if _difficulty == Difficulty.MEDIUM else 0.60
+		if _rng.randf() < pursue_chance:
+			var target := _find_nearest_opponent(gx, gy)
+			if target != Vector2i(-1, -1):
+				return target
+
 	var start := Vector2i(gx, gy)
 	var visited: Dictionary = {start: true}
 	var queue: Array[Vector2i] = [start]
 	var candidates: Array[Vector2i] = []
+	var cluster_best: Vector2i = Vector2i(-1, -1)
+	var cluster_best_count: int = 0
 
 	while not queue.is_empty():
 		var cur: Vector2i = queue.pop_front()
 		if _has_bombable_neighbor(cur.x, cur.y):
 			candidates.append(cur)
-			if candidates.size() >= 3:
+			if _difficulty >= Difficulty.HARD:
+				var count := _count_bombable_neighbors(cur.x, cur.y)
+				if count > cluster_best_count:
+					cluster_best_count = count
+					cluster_best = cur
+			if candidates.size() >= 5:
 				break
 		for d: Vector2i in DIRS:
 			var nv := Vector2i(cur.x + d.x, cur.y + d.y)
@@ -262,6 +298,8 @@ func _pick_wander_target(gx: int, gy: int) -> Vector2i:
 			visited[nv] = true
 			queue.append(nv)
 
+	if _difficulty >= Difficulty.HARD and cluster_best != Vector2i(-1, -1):
+		return cluster_best
 	if not candidates.is_empty():
 		return candidates[_rng.randi_range(0, candidates.size() - 1)]
 	return _random_reachable(gx, gy)
@@ -287,6 +325,98 @@ func _random_reachable(gx: int, gy: int) -> Vector2i:
 	return cells[_rng.randi_range(1, cells.size() - 1)]
 
 
+# ── 中/高难度行为 ────────────────────────
+
+func _find_nearest_opponent(gx: int, gy: int) -> Vector2i:
+	var best := Vector2i(-1, -1)
+	var best_dist := INF
+	for pl: GameLogic.PlayerData in _logic._all_players():
+		if pl.pid == _player.pid or not pl.alive:
+			continue
+		var dx := absi(int(roundf(pl.gx)) - gx)
+		var dy := absi(int(roundf(pl.gy)) - gy)
+		var dist := float(dx + dy)
+		if dist < best_dist:
+			best_dist = dist
+			best = Vector2i(int(roundf(pl.gx)), int(roundf(pl.gy)))
+	if best_dist > 1.0:
+		var approach := _bfs_first_step(gx, gy, best)
+		if approach != Vector2i.ZERO:
+			return Vector2i(gx + approach.x, gy + approach.y)
+	return best
+
+
+func _is_near_opponent(gx: int, gy: int, radius: int) -> bool:
+	for pl: GameLogic.PlayerData in _logic._all_players():
+		if pl.pid == _player.pid or not pl.alive:
+			continue
+		var dx := absi(int(roundf(pl.gx)) - gx)
+		var dy := absi(int(roundf(pl.gy)) - gy)
+		if dx + dy <= radius:
+			return true
+	return false
+
+
+func _count_bombable_neighbors(bx: int, by: int) -> int:
+	var count := 0
+	for d: Vector2i in DIRS:
+		for i in range(1, _player.range_i + 1):
+			var nx: int = bx + d.x * i
+			var ny: int = by + d.y * i
+			if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
+				break
+			var c: int = _logic.grid[nx][ny]
+			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.SHRINK_WALL or c == GameLogic.Cell.WATER:
+				break
+			if c == GameLogic.Cell.TIMED_WALL:
+				if not _logic.timed_wall_open.get(Vector2i(nx, ny), false):
+					break
+			if c == GameLogic.Cell.CRATE or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.MYSTERY_CRATE:
+				count += 1
+				break
+	return count
+
+
+func _try_remote_detonate(gx: int, gy: int, danger: Array) -> void:
+	if not _player.has_remote:
+		return
+	for b in _logic.bombs:
+		var bd: GameLogic.BombData = b
+		if bd.owner_id != _player.pid or not bd.is_remote:
+			continue
+		for pl: GameLogic.PlayerData in _logic._all_players():
+			if pl.pid == _player.pid or not pl.alive:
+				continue
+			var px := int(roundf(pl.gx))
+			var py := int(roundf(pl.gy))
+			if _in_blast_range(bd.gx, bd.gy, bd.range_i, px, py):
+				if not _in_blast_range(bd.gx, bd.gy, bd.range_i, gx, gy):
+					_logic._detonate_remote(_player)
+					return
+
+
+func _in_blast_range(bx: int, by: int, rng_i: int, tx: int, ty: int) -> bool:
+	if bx == tx and by == ty:
+		return true
+	for d: Vector2i in DIRS:
+		for i in range(1, rng_i + 1):
+			var nx: int = bx + d.x * i
+			var ny: int = by + d.y * i
+			if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
+				break
+			var c: int = _logic.grid[nx][ny]
+			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
+				or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL \
+				or c == GameLogic.Cell.WATER:
+				break
+			if c == GameLogic.Cell.TIMED_WALL:
+				if not _logic.timed_wall_open.get(Vector2i(nx, ny), false):
+					break
+			if nx == tx and ny == ty:
+				return true
+	return false
+
+
 # ── 危险地图 ─────────────────────────────
 
 func _build_danger_map() -> Array:
@@ -299,24 +429,26 @@ func _build_danger_map() -> Array:
 		map.append(col)
 	for b in L.bombs:
 		var bd: GameLogic.BombData = b
-		map[bd.gx][bd.gy] = true
-		for d: Vector2i in DIRS:
-			for i in range(1, bd.range_i + 1):
-				var nx: int = bd.gx + d.x * i
-				var ny: int = bd.gy + d.y * i
-				if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
-					break
-				var c: int = L.grid[nx][ny]
-				if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
-					or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL \
-					or c == GameLogic.Cell.WATER:
-					break
-				map[nx][ny] = true
+		_mark_bomb_danger(map, bd.gx, bd.gy, bd.range_i)
 	for e in L.explosions:
 		var ex: GameLogic.ExplData = e
 		if ex.gx >= 0 and ex.gx < _logic.cols and ex.gy >= 0 and ex.gy < _logic.rows:
 			map[ex.gx][ex.gy] = true
+	if L.avalanche_warn > 0.0 and L.avalanche_edge >= 0:
+		_mark_avalanche_danger(map)
 	return map
+
+
+func _blast_blocks(c: int, pos: Vector2i) -> bool:
+	if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
+		or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL \
+		or c == GameLogic.Cell.WATER or c == GameLogic.Cell.ICE_WALL \
+		or c == GameLogic.Cell.MYSTERY_CRATE:
+		return true
+	if c == GameLogic.Cell.TIMED_WALL:
+		if not _logic.timed_wall_open.get(pos, false):
+			return true
+	return false
 
 
 func _mark_bomb_danger(danger: Array, bx: int, by: int, rng_i: int) -> void:
@@ -328,11 +460,26 @@ func _mark_bomb_danger(danger: Array, bx: int, by: int, rng_i: int) -> void:
 			if nx < 0 or ny < 0 or nx >= _logic.cols or ny >= _logic.rows:
 				break
 			var c: int = _logic.grid[nx][ny]
-			if c == GameLogic.Cell.WALL or c == GameLogic.Cell.CRATE \
-				or c == GameLogic.Cell.IRON_CRATE or c == GameLogic.Cell.SHRINK_WALL \
-				or c == GameLogic.Cell.WATER:
+			if _blast_blocks(c, Vector2i(nx, ny)):
 				break
 			danger[nx][ny] = true
+
+
+func _mark_avalanche_danger(danger: Array) -> void:
+	var edge: int = _logic.avalanche_edge
+	var col_idx: int = _logic.avalanche_col
+	var is_horizontal := (edge == 0 or edge == 1)
+	for w in range(-1, 2):
+		if is_horizontal:
+			var y := col_idx + w
+			if y >= 0 and y < _logic.rows:
+				for x in range(_logic.cols):
+					danger[x][y] = true
+		else:
+			var x := col_idx + w
+			if x >= 0 and x < _logic.cols:
+				for y in range(_logic.rows):
+					danger[x][y] = true
 
 
 # ── 辅助 ─────────────────────────────────

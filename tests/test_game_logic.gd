@@ -56,6 +56,23 @@ func run() -> void:
 	test_snow_speed()
 	test_sand_speed()
 	test_lava_damage()
+	test_scoring_crate()
+	test_combo_chain()
+	test_combo_break_on_death()
+	test_match_phase_transitions()
+	test_greed_fuse()
+	test_mystery_crate_placed()
+	test_super_bomb_range()
+	test_bridge_destruction()
+	test_timed_wall_toggle()
+	test_gate_one_way()
+	test_tall_grass_concealment()
+	test_tall_grass_burns()
+	test_treasure_zone_drop()
+	test_flood_event()
+	test_avalanche_event()
+	test_sandstorm_event()
+	test_lava_spread()
 	print("  done.\n")
 
 
@@ -70,7 +87,9 @@ func _make(seed_v: int = 42) -> GameLogic:
 func _clear_around(gl: GameLogic, cx: int, cy: int, radius: int = 3) -> void:
 	for x in range(maxi(1, cx - radius), mini(gl.cols - 1, cx + radius + 1)):
 		for y in range(maxi(1, cy - radius), mini(gl.rows - 1, cy + radius + 1)):
-			if gl.grid[x][y] == GameLogic.Cell.CRATE:
+			var c: int = gl.grid[x][y]
+			if c == GameLogic.Cell.CRATE or c == GameLogic.Cell.MYSTERY_CRATE \
+				or c == GameLogic.Cell.BRIDGE or c == GameLogic.Cell.TIMED_WALL:
 				gl.grid[x][y] = GameLogic.Cell.EMPTY
 
 
@@ -672,3 +691,242 @@ func test_lava_damage() -> void:
 	for i in range(20):
 		gl.player_move_tick(gl.p1, 1.0 / 60.0)
 	T.assert_false(gl.p1.alive, "killed by lava after > 0.8s")
+
+
+# ── 得分系统 ─────────────────────────────
+
+func test_scoring_crate() -> void:
+	T.begin("scoring_crate")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.grid[2][1] = GameLogic.Cell.CRATE
+	gl.try_place_bomb(gl.p1)
+	gl.p1.gx = 1.0; gl.p1.gy = 3.0; gl.p1.moving = false
+	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
+	T.assert_true(gl.p1.score > 0, "score gained from crate")
+
+
+func test_combo_chain() -> void:
+	T.begin("combo_chain")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.pickups.append(GameLogic.PickupData.new(1, 1, GameLogic.Pickup.BOMB_UP))
+	gl.try_collect_pickup(gl.p1)
+	T.assert_eq(gl.p1.combo, 1, "first pickup: combo=1")
+	gl.pickups.append(GameLogic.PickupData.new(1, 1, GameLogic.Pickup.FIRE_UP))
+	gl.try_collect_pickup(gl.p1)
+	T.assert_eq(gl.p1.combo, 2, "second pickup: combo=2")
+	T.assert_eq(gl.p1.max_combo, 2, "max_combo tracked")
+
+
+func test_combo_break_on_death() -> void:
+	T.begin("combo_break_on_death")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.p1.combo = 3
+	gl.p1.combo_timer = 2.0
+	gl.p1.max_combo = 3
+	gl.try_place_bomb(gl.p1)
+	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
+	T.assert_eq(gl.p1.combo, 0, "combo reset on death")
+
+
+func test_match_phase_transitions() -> void:
+	T.begin("match_phase_transitions")
+	var gl := _make()
+	T.assert_eq(gl.match_phase, GameLogic.MatchPhase.OPENING, "starts OPENING")
+	gl.tick_match_phase(GameLogic.PHASE_OPENING_END + 0.1)
+	T.assert_eq(gl.match_phase, GameLogic.MatchPhase.TENSION, "enters TENSION")
+	gl.tick_match_phase(GameLogic.PHASE_TENSION_END - GameLogic.PHASE_OPENING_END)
+	T.assert_eq(gl.match_phase, GameLogic.MatchPhase.CLIMAX, "enters CLIMAX")
+
+
+func test_greed_fuse() -> void:
+	T.begin("greed_fuse")
+	var gl := _make()
+	var base_fuse := gl._get_fuse_for(gl.p1)
+	T.assert_eq(base_fuse, GameLogic.BOMB_FUSE, "zero pickups = base fuse")
+	gl.p1.pickup_count = 10
+	var reduced := gl._get_fuse_for(gl.p1)
+	T.assert_true(reduced < base_fuse, "fuse shortened after pickups")
+	T.assert_true(reduced >= GameLogic.MIN_FUSE, "fuse above minimum")
+
+
+func test_mystery_crate_placed() -> void:
+	T.begin("mystery_crate_placed")
+	var gl := GameLogic.new(42)
+	gl.reset()
+	# Manually place crates then convert
+	_clear_around(gl, 1, 1, 8)
+	for x in range(3, 8):
+		for y in range(3, 8):
+			if gl.grid[x][y] == GameLogic.Cell.EMPTY:
+				gl.grid[x][y] = GameLogic.Cell.CRATE
+	gl._convert_mystery_crates()
+	var count := 0
+	for x in range(gl.cols):
+		for y in range(gl.rows):
+			if gl.grid[x][y] == GameLogic.Cell.MYSTERY_CRATE:
+				count += 1
+	T.assert_true(count > 0, "mystery crates exist after conversion")
+
+
+func test_super_bomb_range() -> void:
+	T.begin("super_bomb_range")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 8)
+	gl._place_super_bomb(gl.p1)
+	T.assert_eq(gl.bombs.size(), 1, "super bomb placed")
+	var bd: GameLogic.BombData = gl.bombs[0]
+	T.assert_true(bd.is_super, "marked as super")
+	T.assert_eq(bd.range_i, gl.p1.range_i + GameLogic.SUPER_RANGE_BONUS, "range boosted")
+
+
+func test_bridge_destruction() -> void:
+	T.begin("bridge_destruction")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.grid[3][1] = GameLogic.Cell.BRIDGE
+	T.assert_true(gl.walkable_for(3, 1, gl.p1), "bridge is walkable")
+	gl.p1.gx = 2.0; gl.p1.gy = 1.0; gl.p1.moving = false
+	gl.p1.range_i = 3
+	gl.try_place_bomb(gl.p1)
+	gl.p1.gx = 1.0; gl.p1.gy = 1.0; gl.p1.moving = false
+	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
+	T.assert_eq(gl.grid[3][1], GameLogic.Cell.WATER, "bridge becomes water after blast")
+	var found_bridge_event := false
+	for ev in gl.events:
+		var e: GameLogic.GameEvent = ev
+		if e.type == GameLogic.Event.BRIDGE_DESTROYED:
+			found_bridge_event = true
+	T.assert_true(found_bridge_event, "BRIDGE_DESTROYED event emitted")
+
+
+func test_timed_wall_toggle() -> void:
+	T.begin("timed_wall_toggle")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.grid[3][1] = GameLogic.Cell.TIMED_WALL
+	gl.timed_wall_open[Vector2i(3, 1)] = false
+	T.assert_true(not gl.walkable_for(3, 1, gl.p1), "closed timed wall blocks")
+	gl.tick_timed_walls(GameLogic.TIMED_WALL_INTERVAL + 0.01)
+	T.assert_true(gl.timed_wall_open[Vector2i(3, 1)], "wall toggled open")
+	T.assert_true(gl.walkable_for(3, 1, gl.p1), "open timed wall walkable")
+	gl.tick_timed_walls(GameLogic.TIMED_WALL_INTERVAL + 0.01)
+	T.assert_true(not gl.timed_wall_open[Vector2i(3, 1)], "wall toggled closed again")
+
+
+func test_gate_one_way() -> void:
+	T.begin("gate_one_way")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.floor_grid[3][1] = GameLogic.Floor.GATE_E
+	T.assert_true(not gl._gate_blocks(3, 1, 1, 0), "GATE_E allows east entry")
+	T.assert_true(gl._gate_blocks(3, 1, -1, 0), "GATE_E blocks west entry")
+	T.assert_true(gl._gate_blocks(3, 1, 0, 1), "GATE_E blocks south entry")
+	T.assert_true(gl._gate_blocks(3, 1, 0, -1), "GATE_E blocks north entry")
+	gl.floor_grid[3][3] = GameLogic.Floor.GATE_N
+	T.assert_true(not gl._gate_blocks(3, 3, 0, -1), "GATE_N allows north entry")
+	T.assert_true(gl._gate_blocks(3, 3, 0, 1), "GATE_N blocks south entry")
+
+
+func test_tall_grass_concealment() -> void:
+	T.begin("tall_grass_concealment")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 3)
+	gl.floor_grid[1][1] = GameLogic.Floor.TALL_GRASS
+	gl.p1.gx = 1.0; gl.p1.gy = 1.0; gl.p1.moving = false
+	T.assert_true(gl.is_concealed(gl.p1), "player concealed in tall grass")
+	gl.p1.moving = true
+	T.assert_true(not gl.is_concealed(gl.p1), "player not concealed when moving")
+
+
+func test_tall_grass_burns() -> void:
+	T.begin("tall_grass_burns")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.floor_grid[3][1] = GameLogic.Floor.TALL_GRASS
+	gl.p1.gx = 1.0; gl.p1.gy = 1.0; gl.p1.moving = false
+	gl.p1.range_i = 3
+	gl.try_place_bomb(gl.p1)
+	gl.p1.gx = 1.0; gl.p1.gy = 3.0; gl.p1.moving = false
+	gl.tick_bombs(GameLogic.BOMB_FUSE + 0.1)
+	T.assert_eq(gl.floor_grid[3][1], GameLogic.Floor.NORMAL, "tall grass becomes normal after blast")
+
+
+func test_treasure_zone_drop() -> void:
+	T.begin("treasure_zone_drop")
+	var gl := GameLogic.new(42)
+	gl.reset({"treasure_zones": [[3, 3, 5, 5]]})
+	T.assert_true(gl.is_in_treasure_zone(4, 4), "center point in zone")
+	T.assert_true(not gl.is_in_treasure_zone(1, 1), "outside zone")
+	T.assert_true(gl.is_in_treasure_zone(3, 3), "corner is in zone")
+	T.assert_true(gl.is_in_treasure_zone(5, 5), "far corner is in zone")
+
+
+func test_flood_event() -> void:
+	T.begin("flood_event")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.grid[3][1] = GameLogic.Cell.WATER
+	gl.grid[4][1] = GameLogic.Cell.EMPTY
+	gl.floor_grid[4][1] = GameLogic.Floor.GRASS
+	gl._tick_flood(GameLogic.FLOOD_INTERVAL + 0.1)
+	var found_flood := false
+	for ev in gl.events:
+		var e: GameLogic.GameEvent = ev
+		if e.type == GameLogic.Event.FLOOD_ADVANCE:
+			found_flood = true
+	T.assert_true(found_flood, "flood event emitted when water adjacent to grass")
+
+
+func test_avalanche_event() -> void:
+	T.begin("avalanche_event")
+	var gl := _make()
+	gl._tick_avalanche(GameLogic.AVALANCHE_INTERVAL + 0.1)
+	T.assert_true(gl.avalanche_warn > 0.0, "avalanche warning started")
+	var found_warn := false
+	for ev in gl.events:
+		var e: GameLogic.GameEvent = ev
+		if e.type == GameLogic.Event.AVALANCHE and e.data.get("warn", false):
+			found_warn = true
+	T.assert_true(found_warn, "avalanche warning event emitted")
+	gl.events.clear()
+	gl._tick_avalanche(2.1)
+	var found_fire := false
+	for ev in gl.events:
+		var e: GameLogic.GameEvent = ev
+		if e.type == GameLogic.Event.AVALANCHE and not e.data.get("warn", true):
+			found_fire = true
+	T.assert_true(found_fire, "avalanche fire event emitted")
+
+
+func test_sandstorm_event() -> void:
+	T.begin("sandstorm_event")
+	var gl := _make()
+	gl._tick_sandstorm(GameLogic.SANDSTORM_INTERVAL + 0.1)
+	T.assert_true(gl.sandstorm_active, "sandstorm active after interval")
+	var found_start := false
+	for ev in gl.events:
+		var e: GameLogic.GameEvent = ev
+		if e.type == GameLogic.Event.SANDSTORM_START:
+			found_start = true
+	T.assert_true(found_start, "SANDSTORM_START event emitted")
+	T.assert_true(gl.sandstorm_dir != Vector2i.ZERO, "sandstorm has direction")
+
+
+func test_lava_spread() -> void:
+	T.begin("lava_spread")
+	var gl := _make()
+	_clear_around(gl, 1, 1, 5)
+	gl.floor_grid[3][3] = GameLogic.Floor.LAVA
+	gl.grid[3][3] = GameLogic.Cell.EMPTY
+	gl.floor_grid[4][3] = GameLogic.Floor.NORMAL
+	gl.grid[4][3] = GameLogic.Cell.EMPTY
+	gl._spread_lava()
+	var spread_found := false
+	for ev in gl.events:
+		var e: GameLogic.GameEvent = ev
+		if e.type == GameLogic.Event.LAVA_SPREAD:
+			spread_found = true
+	T.assert_true(spread_found, "LAVA_SPREAD event emitted")

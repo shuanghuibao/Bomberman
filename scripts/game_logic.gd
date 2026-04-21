@@ -26,11 +26,43 @@ const ERUPTION_INTERVAL := 22.0
 const BLIZZARD_INTERVAL := 20.0
 const BLIZZARD_DURATION := 4.0
 const CREATURE_MOVE_TIME := 1.5
+const BOUNCY_DURATION := 15.0
+const ICE_WALL_DURATION := 6.0
+const INVISIBLE_DURATION := 3.0
+const CLONE_LIFETIME := 8.0
+const CLONE_MOVE_TIME := 0.8
+const CLONE_SLOW_RANGE := 2
+const CLONE_SLOW_DUR := 2.0
+const COMBO_WINDOW := 2.0
+const SCORE_CRATE := 10
+const SCORE_IRON := 25
+const SCORE_PICKUP := 15
+const SCORE_KILL := 200
+const SCORE_CREATURE := 30
+const SCORE_PHASE := 50
+const SCORE_WIN := 300
+const FUSE_PENALTY := 0.04
+const MIN_FUSE := 1.2
+const CHARGE_TIME := 0.8
+const SUPER_RANGE_BONUS := 2
+const MYSTERY_RATIO := 0.15
+const PHASE_OPENING_END := 20.0
+const PHASE_TENSION_END := 40.0
+const TIMED_WALL_INTERVAL := 6.0
+const FLOOD_INTERVAL := 18.0
+const AVALANCHE_INTERVAL := 25.0
+const SANDSTORM_INTERVAL := 20.0
+const SANDSTORM_DURATION := 3.0
+const TREASURE_DROP_CHANCE := 0.85
 
-enum Cell { EMPTY, WALL, CRATE, IRON_CRATE, SHRINK_WALL, WATER }
-enum Floor { NORMAL, ICE, MUD, GRASS, SNOW, SAND, LAVA, CONV_N, CONV_E, CONV_S, CONV_W }
+enum Cell { EMPTY, WALL, CRATE, IRON_CRATE, SHRINK_WALL, WATER, ICE_WALL, MYSTERY_CRATE,
+	BRIDGE, TIMED_WALL }
+enum Floor { NORMAL, ICE, MUD, GRASS, SNOW, SAND, LAVA, CONV_N, CONV_E, CONV_S, CONV_W,
+	TALL_GRASS, GATE_N, GATE_E, GATE_S, GATE_W }
 enum Phase { PLAYING, P1_WIN, P2_WIN, DRAW }
-enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE, SHIELD, SLOW_CURSE }
+enum MatchPhase { OPENING, TENSION, CLIMAX }
+enum Pickup { BOMB_UP, FIRE_UP, SPEED_UP, KICK, REMOTE, SHIELD, SLOW_CURSE,
+	BOUNCY_BOMB, ICE_WALL, SOUL_SWAP, SHADOW_CLONE }
 
 
 class PlayerData:
@@ -52,6 +84,14 @@ class PlayerData:
 	var target_gx: float = 0.0
 	var target_gy: float = 0.0
 	var lava_timer: float = 0.0
+	var bouncy_timer: float = 0.0
+	var invisible_timer: float = 0.0
+	var score: int = 0
+	var combo: int = 0
+	var combo_timer: float = 0.0
+	var max_combo: int = 0
+	var pickup_count: int = 0
+	var charge_timer: float = 0.0
 
 	func _init(p_pid: int, sx: int, sy: int) -> void:
 		pid = p_pid
@@ -78,6 +118,14 @@ class PlayerData:
 		last_bomb = Vector2i(999999, 999999)
 		moving = false
 		lava_timer = 0.0
+		bouncy_timer = 0.0
+		invisible_timer = 0.0
+		score = 0
+		combo = 0
+		combo_timer = 0.0
+		max_combo = 0
+		pickup_count = 0
+		charge_timer = 0.0
 
 	func move_speed() -> float:
 		var spd := minf(GameLogic.BASE_SPEED + speed_ups * GameLogic.SPEED_PER_SHOE, GameLogic.MAX_SPEED)
@@ -107,6 +155,9 @@ class BombData:
 	var moving: bool = false
 	var move_dir: Vector2i = Vector2i.ZERO
 	var move_timer: float = 0.0
+	var is_bouncy: bool = false
+	var bounces_left: int = 0
+	var is_super: bool = false
 
 	func _init(p_gx: int, p_gy: int, oid: int, fuse: float, rng: int) -> void:
 		gx = p_gx
@@ -120,8 +171,9 @@ class ExplData:
 	var gx: int
 	var gy: int
 	var ttl: float
-	func _init(x: int, y: int, t: float) -> void:
-		gx = x; gy = y; ttl = t
+	var owner_id: int
+	func _init(x: int, y: int, t: float, oid: int = -1) -> void:
+		gx = x; gy = y; ttl = t; owner_id = oid
 
 
 class PickupData:
@@ -141,6 +193,18 @@ class CreatureData:
 		gx = x; gy = y; move_timer = randf() * 1.0
 
 
+class CloneData:
+	var gx: int
+	var gy: int
+	var owner_pid: int
+	var alive: bool = true
+	var timer: float
+	var move_timer: float = 0.0
+	func _init(x: int, y: int, pid: int) -> void:
+		gx = x; gy = y; owner_pid = pid
+		timer = GameLogic.CLONE_LIFETIME; move_timer = randf() * 0.5
+
+
 # ── 事件队列 ─────────────────────────────
 
 enum Event {
@@ -148,6 +212,13 @@ enum Event {
 	BOMB_KICKED, REMOTE_DETONATE, SHIELD_BREAK,
 	TELEPORT, SHRINK_ADVANCE, IRON_HIT, IRON_BREAK,
 	GRASS_BURNED, CRATE_DESTROYED, ERUPTION, CREATURE_KILLED,
+	SOUL_SWAPPED, ICE_WALL_PLACED, CLONE_SPAWNED, CLONE_POPPED,
+	BOUNCY_ACTIVATED, BOUNCY_BOUNCE,
+	COMBO_UP, COMBO_BREAK, MATCH_PHASE_CHANGE,
+	MYSTERY_RESOLVED, SUPER_BOMB_PLACED,
+	BRIDGE_DESTROYED, TIMED_WALL_TOGGLE,
+	FLOOD_ADVANCE, AVALANCHE, SANDSTORM_START, SANDSTORM_END,
+	LAVA_SPREAD,
 }
 
 class GameEvent:
@@ -182,7 +253,27 @@ var eruption_timer: float = 0.0
 var blizzard_timer: float = 0.0
 var blizzard_active: bool = false
 var blizzard_remaining: float = 0.0
+var clones: Array = []
+var ice_wall_timers: Dictionary = {}
+var fun_mode: bool = false
+var extra_players: Array = []
+var match_timer: float = 0.0
+var match_phase: int = MatchPhase.OPENING
+var _current_blast_owner: int = -1
 var _map: Dictionary = {}
+var timed_wall_open: Dictionary = {}
+var timed_wall_timer: float = 0.0
+var flood_timer: float = 0.0
+var avalanche_timer: float = 0.0
+var avalanche_warn: float = -1.0
+var avalanche_edge: int = -1
+var avalanche_col: int = -1
+var sandstorm_timer: float = 0.0
+var sandstorm_active: bool = false
+var sandstorm_remaining: float = 0.0
+var sandstorm_dir: Vector2i = Vector2i.ZERO
+var sandstorm_push_cd: float = 0.0
+var treasure_zones: Array = []
 
 
 func _init(seed_value: int = -1) -> void:
@@ -209,10 +300,29 @@ func reset(map: Dictionary = {}) -> void:
 	shrink_ring = 0
 	shrink_enabled = _map.get("shrink", false)
 	creatures.clear()
+	clones.clear()
+	ice_wall_timers.clear()
+	extra_players.clear()
 	eruption_timer = 0.0
 	blizzard_timer = 0.0
 	blizzard_active = false
 	blizzard_remaining = 0.0
+	match_timer = 0.0
+	match_phase = MatchPhase.OPENING
+	_current_blast_owner = -1
+	timed_wall_open.clear()
+	timed_wall_timer = 0.0
+	flood_timer = 0.0
+	avalanche_timer = 0.0
+	avalanche_warn = -1.0
+	avalanche_edge = -1
+	avalanche_col = -1
+	sandstorm_timer = 0.0
+	sandstorm_active = false
+	sandstorm_remaining = 0.0
+	sandstorm_dir = Vector2i.ZERO
+	sandstorm_push_cd = 0.0
+	treasure_zones = _map.get("treasure_zones", [])
 	_build_grid()
 	var spawns: Array = _map.get("spawns", [Vector2i(1, 1), Vector2i(cols - 2, rows - 2)])
 	if spawns.size() >= 1:
@@ -246,6 +356,7 @@ func _build_grid() -> void:
 		_place_crates(density)
 	else:
 		_build_default_grid(density)
+	_convert_mystery_crates()
 	_carve_reachable_crates()
 
 
@@ -299,6 +410,26 @@ func _parse_template(template: Array) -> void:
 				"C":
 					grid[x][y] = Cell.EMPTY
 					creatures.append(CreatureData.new(x, y))
+				"B":
+					grid[x][y] = Cell.BRIDGE
+				"X":
+					grid[x][y] = Cell.TIMED_WALL
+					timed_wall_open[Vector2i(x, y)] = false
+				"H":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.TALL_GRASS
+				"]":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.GATE_E
+				"[":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.GATE_W
+				"(":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.GATE_N
+				")":
+					grid[x][y] = Cell.EMPTY
+					floor_grid[x][y] = Floor.GATE_S
 				_:
 					grid[x][y] = Cell.EMPTY
 	for i in range(0, pending_portals.size() - 1, 2):
@@ -319,6 +450,25 @@ func _place_crates(density: float) -> void:
 				continue
 			if rng.randf() < density:
 				grid[x][y] = Cell.CRATE
+
+
+func _convert_mystery_crates() -> void:
+	var crate_positions: Array[Vector2i] = []
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if grid[x][y] == Cell.CRATE:
+				crate_positions.append(Vector2i(x, y))
+	for i in range(crate_positions.size() - 1, 0, -1):
+		var j: int = rng.randi() % (i + 1)
+		var tmp := crate_positions[i]
+		crate_positions[i] = crate_positions[j]
+		crate_positions[j] = tmp
+	var count := 0
+	for p in crate_positions:
+		var ratio: float = MYSTERY_RATIO * 2.0 if is_in_treasure_zone(p.x, p.y) else MYSTERY_RATIO
+		if rng.randf() < ratio:
+			grid[p.x][p.y] = Cell.MYSTERY_CRATE
+			count += 1
 
 
 # ── 主题地形随机化 ────────────────────────
@@ -535,7 +685,7 @@ func _carve_reachable_crates() -> void:
 			_bfs_reachable(sp.x, sp.y, reach)
 	for x in range(1, cols - 1):
 		for y in range(1, rows - 1):
-			if grid[x][y] == Cell.CRATE and not reach.has(Vector2i(x, y)):
+			if (grid[x][y] == Cell.CRATE or grid[x][y] == Cell.MYSTERY_CRATE) and not reach.has(Vector2i(x, y)):
 				grid[x][y] = Cell.EMPTY
 
 
@@ -549,12 +699,13 @@ func _bfs_reachable(sx: int, sy: int, reach: Dictionary) -> void:
 			var n := c + d
 			if n.x < 0 or n.y < 0 or n.x >= cols or n.y >= rows:
 				continue
-			if grid[n.x][n.y] == Cell.WALL or grid[n.x][n.y] == Cell.WATER:
+			var gc: int = grid[n.x][n.y]
+			if gc == Cell.WALL or gc == Cell.WATER:
 				continue
 			if reach.has(n):
 				continue
 			reach[n] = true
-			if grid[n.x][n.y] == Cell.EMPTY:
+			if gc == Cell.EMPTY or gc == Cell.BRIDGE or gc == Cell.TIMED_WALL:
 				q.append(n)
 
 
@@ -592,6 +743,8 @@ func try_start_move(pl: PlayerData, dx: int, dy: int) -> bool:
 			if b != null and not b.moving:
 				_kick_bomb(b, Vector2i(dx, dy))
 		return false
+	if _gate_blocks(tx, ty, dx, dy):
+		return false
 	pl.gx = float(sx)
 	pl.gy = float(sy)
 	pl.target_gx = float(tx)
@@ -607,6 +760,14 @@ func player_move_tick(pl: PlayerData, dt: float) -> void:
 		return
 	if pl.slow_timer > 0.0:
 		pl.slow_timer = maxf(pl.slow_timer - dt, 0.0)
+	if pl.bouncy_timer > 0.0:
+		pl.bouncy_timer = maxf(pl.bouncy_timer - dt, 0.0)
+	if pl.invisible_timer > 0.0:
+		pl.invisible_timer = maxf(pl.invisible_timer - dt, 0.0)
+	if pl.combo > 0:
+		pl.combo_timer -= dt
+		if pl.combo_timer <= 0.0:
+			_break_combo(pl)
 	if pl.portal_cd > 0.0:
 		pl.portal_cd = maxf(pl.portal_cd - dt, 0.0)
 	if pl.moving:
@@ -633,7 +794,7 @@ func player_move_tick(pl: PlayerData, dt: float) -> void:
 			if floor_at(igx, igy) == Floor.ICE and pl.last_dir != Vector2i.ZERO:
 				var nx := igx + pl.last_dir.x
 				var ny := igy + pl.last_dir.y
-				if walkable_for(nx, ny, pl):
+				if walkable_for(nx, ny, pl) and not _gate_blocks(nx, ny, pl.last_dir.x, pl.last_dir.y):
 					pl.target_gx = float(nx)
 					pl.target_gy = float(ny)
 					pl.moving = true
@@ -670,27 +831,89 @@ func player_move_tick(pl: PlayerData, dt: float) -> void:
 			Floor.CONV_W: try_start_move(pl, -1, 0)
 
 
-func update_player(pl: PlayerData, dir: Vector2i, want_bomb: bool, dt: float) -> void:
+func update_player(pl: PlayerData, dir: Vector2i, want_bomb: bool, dt: float,
+		bomb_held: bool = false) -> void:
 	if not pl.alive:
 		return
-	if dir != Vector2i.ZERO:
-		try_start_move(pl, dir.x, dir.y)
+	if pl.charge_timer > 0.0:
+		pl.charge_timer += dt
+		if pl.charge_timer >= CHARGE_TIME:
+			_place_super_bomb(pl)
+			pl.charge_timer = 0.0
+		elif not bomb_held:
+			try_place_bomb(pl)
+			pl.charge_timer = 0.0
+	elif bomb_held and pl.aligned() and bomb_at(int(roundf(pl.gx)), int(roundf(pl.gy))) == null:
+		pl.charge_timer = dt
+	else:
+		if dir != Vector2i.ZERO:
+			try_start_move(pl, dir.x, dir.y)
+		if want_bomb:
+			try_place_bomb(pl)
 	player_move_tick(pl, dt)
 	try_collect_pickup(pl)
-	if want_bomb:
-		try_place_bomb(pl)
 
 
 func walkable_for(gx: int, gy: int, pl: PlayerData) -> bool:
 	if gx < 0 or gy < 0 or gx >= cols or gy >= rows:
 		return false
 	var c: int = grid[gx][gy]
-	if c != Cell.EMPTY:
+	if c == Cell.BRIDGE:
+		pass
+	elif c == Cell.TIMED_WALL:
+		if not timed_wall_open.get(Vector2i(gx, gy), false):
+			return false
+	elif c != Cell.EMPTY:
 		return false
 	var b: BombData = bomb_at(gx, gy)
 	if b != null:
 		return pl.can_stand_on_bomb(gx, gy)
 	return true
+
+
+func _gate_blocks(tx: int, ty: int, dx: int, dy: int) -> bool:
+	if tx < 0 or ty < 0 or tx >= cols or ty >= rows:
+		return false
+	var f: int = floor_grid[tx][ty]
+	match f:
+		Floor.GATE_E:
+			return dx != 1
+		Floor.GATE_W:
+			return dx != -1
+		Floor.GATE_N:
+			return dy != -1
+		Floor.GATE_S:
+			return dy != 1
+	return false
+
+
+func is_concealed(pl: PlayerData) -> bool:
+	if not pl.alive:
+		return false
+	var igx := int(roundf(pl.gx))
+	var igy := int(roundf(pl.gy))
+	return floor_at(igx, igy) == Floor.TALL_GRASS and not pl.moving
+
+
+func is_in_treasure_zone(x: int, y: int) -> bool:
+	for zone in treasure_zones:
+		if x >= zone[0] and y >= zone[1] and x <= zone[2] and y <= zone[3]:
+			return true
+	return false
+
+
+func tick_timed_walls(dt: float) -> void:
+	if timed_wall_open.is_empty():
+		return
+	timed_wall_timer += dt
+	if timed_wall_timer >= TIMED_WALL_INTERVAL:
+		timed_wall_timer -= TIMED_WALL_INTERVAL
+		for pos in timed_wall_open:
+			timed_wall_open[pos] = not timed_wall_open[pos]
+		events.append(GameEvent.new(Event.TIMED_WALL_TOGGLE, {"open": timed_wall_open.values().any(func(v): return v)}))
+		for pos in timed_wall_open:
+			if not timed_wall_open[pos]:
+				_damage_at(pos.x, pos.y)
 
 
 # ── 炸弹 ─────────────────────────────────
@@ -718,10 +941,17 @@ func try_place_bomb(pl: PlayerData) -> void:
 		if pl.has_remote:
 			_detonate_remote(pl)
 		return
-	var bd := BombData.new(gx, gy, pl.pid, BOMB_FUSE, pl.range_i)
+	var bd := BombData.new(gx, gy, pl.pid, _get_fuse_for(pl), pl.range_i)
 	if pl.has_remote:
 		bd.is_remote = true
 		bd.time = 9999.0
+	if pl.bouncy_timer > 0.0:
+		bd.is_bouncy = true
+		bd.bounces_left = 3
+		if pl.last_dir != Vector2i.ZERO:
+			bd.moving = true
+			bd.move_dir = pl.last_dir
+			bd.move_timer = BOMB_SLIDE_INTERVAL
 	bombs.append(bd)
 	pl.note_placed_bomb(gx, gy)
 	events.append(GameEvent.new(Event.BOMB_PLACED, {"pid": pl.pid}))
@@ -767,8 +997,21 @@ func tick_moving_bombs(dt: float) -> void:
 		var nx: int = b.gx + b.move_dir.x
 		var ny: int = b.gy + b.move_dir.y
 		if _bomb_slide_blocked(nx, ny):
-			b.moving = false
-			b.move_dir = Vector2i.ZERO
+			if b.is_bouncy and b.bounces_left > 0:
+				b.bounces_left -= 1
+				b.move_dir = -b.move_dir
+				events.append(GameEvent.new(Event.BOUNCY_BOUNCE, {"gx": b.gx, "gy": b.gy}))
+				var bnx: int = b.gx + b.move_dir.x
+				var bny: int = b.gy + b.move_dir.y
+				if not _bomb_slide_blocked(bnx, bny):
+					b.gx = bnx
+					b.gy = bny
+				else:
+					b.moving = false
+					b.move_dir = Vector2i.ZERO
+			else:
+				b.moving = false
+				b.move_dir = Vector2i.ZERO
 		else:
 			b.gx = nx
 			b.gy = ny
@@ -777,7 +1020,13 @@ func tick_moving_bombs(dt: float) -> void:
 func _bomb_slide_blocked(gx: int, gy: int) -> bool:
 	if gx < 0 or gy < 0 or gx >= cols or gy >= rows:
 		return true
-	if grid[gx][gy] != Cell.EMPTY:
+	var c: int = grid[gx][gy]
+	if c == Cell.BRIDGE:
+		pass
+	elif c == Cell.TIMED_WALL:
+		if not timed_wall_open.get(Vector2i(gx, gy), false):
+			return true
+	elif c != Cell.EMPTY:
 		return true
 	if bomb_at(gx, gy) != null:
 		return true
@@ -800,6 +1049,7 @@ func tick_bombs(dt: float) -> void:
 		if next == null:
 			break
 		_explode_bomb_wave(next)
+	_current_blast_owner = -1
 
 
 func _explode_bomb_wave(seed_bomb: BombData) -> void:
@@ -813,7 +1063,8 @@ func _explode_bomb_wave(seed_bomb: BombData) -> void:
 
 
 func _explode_single(b: BombData, q: Array) -> void:
-	events.append(GameEvent.new(Event.EXPLOSION, {"gx": b.gx, "gy": b.gy}))
+	_current_blast_owner = b.owner_id
+	events.append(GameEvent.new(Event.EXPLOSION, {"gx": b.gx, "gy": b.gy, "pid": b.owner_id}))
 	_blast_cell(b.gx, b.gy, q)
 	_spread_blast(b.gx, b.gy, 1, 0, b.range_i, q)
 	_spread_blast(b.gx, b.gy, -1, 0, b.range_i, q)
@@ -828,18 +1079,34 @@ func _spread_blast(ox: int, oy: int, dx: int, dy: int, range_i: int, q: Array) -
 		if x < 0 or y < 0 or x >= cols or y >= rows:
 			break
 		var c: int = grid[x][y]
-		if c == Cell.WALL or c == Cell.SHRINK_WALL or c == Cell.WATER:
+		if c == Cell.WALL or c == Cell.SHRINK_WALL or c == Cell.WATER or c == Cell.ICE_WALL:
+			break
+		if c == Cell.TIMED_WALL:
+			if not timed_wall_open.get(Vector2i(x, y), false):
+				break
+		if c == Cell.BRIDGE:
+			grid[x][y] = Cell.WATER
+			_blast_cell(x, y, q)
+			events.append(GameEvent.new(Event.BRIDGE_DESTROYED, {"gx": x, "gy": y}))
 			break
 		var stop := _blast_cell(x, y, q)
 		if c == Cell.CRATE:
 			grid[x][y] = Cell.EMPTY
 			events.append(GameEvent.new(Event.CRATE_DESTROYED, {"gx": x, "gy": y}))
+			_award_score_pid(_current_blast_owner, SCORE_CRATE)
 			_maybe_drop_pickup(x, y)
+			break
+		if c == Cell.MYSTERY_CRATE:
+			grid[x][y] = Cell.EMPTY
+			events.append(GameEvent.new(Event.CRATE_DESTROYED, {"gx": x, "gy": y}))
+			_award_score_pid(_current_blast_owner, SCORE_CRATE)
+			_resolve_mystery(x, y)
 			break
 		if c == Cell.IRON_CRATE:
 			_damage_iron_crate(x, y)
 			break
-		if c == Cell.EMPTY and floor_grid[x][y] == Floor.GRASS:
+		var f: int = floor_grid[x][y]
+		if c == Cell.EMPTY and (f == Floor.GRASS or f == Floor.TALL_GRASS):
 			floor_grid[x][y] = Floor.NORMAL
 			events.append(GameEvent.new(Event.GRASS_BURNED, {"gx": x, "gy": y}))
 			if rng.randf() < GRASS_DROP_CHANCE:
@@ -849,7 +1116,7 @@ func _spread_blast(ox: int, oy: int, dx: int, dy: int, range_i: int, q: Array) -
 
 
 func _blast_cell(x: int, y: int, q: Array) -> bool:
-	explosions.append(ExplData.new(x, y, EXPLOSION_TTL))
+	explosions.append(ExplData.new(x, y, EXPLOSION_TTL, _current_blast_owner))
 	_damage_at(x, y)
 	_destroy_pickups_at(x, y)
 	var other: BombData = bomb_at(x, y)
@@ -871,27 +1138,33 @@ func _damage_iron_crate(x: int, y: int) -> void:
 	if iron_hp[pos] <= 0:
 		iron_hp.erase(pos)
 		grid[x][y] = Cell.EMPTY
+		_award_score_pid(_current_blast_owner, SCORE_IRON)
 		_maybe_drop_pickup(x, y)
 		events.append(GameEvent.new(Event.IRON_BREAK, {"gx": x, "gy": y}))
 	else:
 		events.append(GameEvent.new(Event.IRON_HIT, {"gx": x, "gy": y}))
 
 
-func _damage_at(x: int, y: int) -> void:
+func _damage_at(x: int, y: int, attacker: int = -1) -> void:
+	var atk := attacker if attacker >= 0 else _current_blast_owner
 	if p1.alive and int(roundf(p1.gx)) == x and int(roundf(p1.gy)) == y:
-		try_kill_player(p1)
+		try_kill_player(p1, atk)
 	if p2.alive and int(roundf(p2.gx)) == x and int(roundf(p2.gy)) == y:
-		try_kill_player(p2)
+		try_kill_player(p2, atk)
 
 
-func try_kill_player(pl: PlayerData) -> void:
+func try_kill_player(pl: PlayerData, attacker_pid: int = -1) -> void:
 	if not pl.alive:
 		return
 	if pl.shield > 0:
 		pl.shield -= 1
+		_break_combo(pl)
 		events.append(GameEvent.new(Event.SHIELD_BREAK, {"pid": pl.pid}))
 		return
 	pl.alive = false
+	_break_combo(pl)
+	if attacker_pid >= 0 and attacker_pid != pl.pid:
+		_award_score_pid(attacker_pid, SCORE_KILL)
 
 
 # ── 爆炸 ─────────────────────────────────
@@ -913,7 +1186,8 @@ func tick_shrink(dt: float) -> void:
 	if shrink_timer < SHRINK_START:
 		return
 	var max_ring := mini(cols, rows) / 2 - 1
-	var target := mini(int((shrink_timer - SHRINK_START) / SHRINK_INTERVAL) + 1, max_ring)
+	var interval := SHRINK_INTERVAL * 0.5 if match_phase == MatchPhase.CLIMAX else SHRINK_INTERVAL
+	var target := mini(int((shrink_timer - SHRINK_START) / interval) + 1, max_ring)
 	while shrink_ring < target:
 		shrink_ring += 1
 		_apply_shrink_ring(shrink_ring)
@@ -955,25 +1229,91 @@ func _remove_dead_portals() -> void:
 # ── 道具 ─────────────────────────────────
 
 func _maybe_drop_pickup(x: int, y: int) -> void:
-	if rng.randf() > DROP_CHANCE:
+	var chance: float = TREASURE_DROP_CHANCE if is_in_treasure_zone(x, y) else DROP_CHANCE
+	if rng.randf() > chance:
 		return
-	var roll := rng.randf()
-	var kind: int
-	if roll < 0.22:
-		kind = Pickup.BOMB_UP
-	elif roll < 0.42:
-		kind = Pickup.FIRE_UP
-	elif roll < 0.58:
-		kind = Pickup.SPEED_UP
-	elif roll < 0.70:
-		kind = Pickup.KICK
-	elif roll < 0.80:
-		kind = Pickup.REMOTE
-	elif roll < 0.90:
-		kind = Pickup.SHIELD
-	else:
-		kind = Pickup.SLOW_CURSE
+	var in_tz: bool = is_in_treasure_zone(x, y)
+	var kind: int = _roll_treasure_pickup() if in_tz else _roll_pickup_kind()
 	pickups.append(PickupData.new(x, y, kind))
+
+
+func _roll_treasure_pickup() -> int:
+	var roll := rng.randf()
+	if roll < 0.25: return Pickup.SHIELD
+	elif roll < 0.45: return Pickup.REMOTE
+	elif roll < 0.65: return Pickup.KICK
+	elif roll < 0.80: return Pickup.FIRE_UP
+	elif roll < 0.90: return Pickup.BOMB_UP
+	else: return Pickup.SPEED_UP
+
+
+func _roll_pickup_kind() -> int:
+	var roll := rng.randf()
+	if fun_mode:
+		match match_phase:
+			MatchPhase.TENSION:
+				if roll < 0.08: return Pickup.BOMB_UP
+				elif roll < 0.16: return Pickup.FIRE_UP
+				elif roll < 0.22: return Pickup.SPEED_UP
+				elif roll < 0.34: return Pickup.KICK
+				elif roll < 0.44: return Pickup.REMOTE
+				elif roll < 0.56: return Pickup.SHIELD
+				elif roll < 0.62: return Pickup.SLOW_CURSE
+				elif roll < 0.72: return Pickup.BOUNCY_BOMB
+				elif roll < 0.80: return Pickup.ICE_WALL
+				elif roll < 0.90: return Pickup.SOUL_SWAP
+				else: return Pickup.SHADOW_CLONE
+			MatchPhase.CLIMAX:
+				if roll < 0.06: return Pickup.BOMB_UP
+				elif roll < 0.12: return Pickup.FIRE_UP
+				elif roll < 0.16: return Pickup.SPEED_UP
+				elif roll < 0.24: return Pickup.KICK
+				elif roll < 0.30: return Pickup.REMOTE
+				elif roll < 0.40: return Pickup.SHIELD
+				elif roll < 0.52: return Pickup.SLOW_CURSE
+				elif roll < 0.64: return Pickup.BOUNCY_BOMB
+				elif roll < 0.76: return Pickup.ICE_WALL
+				elif roll < 0.88: return Pickup.SOUL_SWAP
+				else: return Pickup.SHADOW_CLONE
+			_:
+				if roll < 0.14: return Pickup.BOMB_UP
+				elif roll < 0.26: return Pickup.FIRE_UP
+				elif roll < 0.36: return Pickup.SPEED_UP
+				elif roll < 0.44: return Pickup.KICK
+				elif roll < 0.50: return Pickup.REMOTE
+				elif roll < 0.58: return Pickup.SHIELD
+				elif roll < 0.64: return Pickup.SLOW_CURSE
+				elif roll < 0.74: return Pickup.BOUNCY_BOMB
+				elif roll < 0.83: return Pickup.ICE_WALL
+				elif roll < 0.92: return Pickup.SOUL_SWAP
+				else: return Pickup.SHADOW_CLONE
+	else:
+		match match_phase:
+			MatchPhase.TENSION:
+				if roll < 0.12: return Pickup.BOMB_UP
+				elif roll < 0.24: return Pickup.FIRE_UP
+				elif roll < 0.34: return Pickup.SPEED_UP
+				elif roll < 0.50: return Pickup.KICK
+				elif roll < 0.64: return Pickup.REMOTE
+				elif roll < 0.82: return Pickup.SHIELD
+				else: return Pickup.SLOW_CURSE
+			MatchPhase.CLIMAX:
+				if roll < 0.10: return Pickup.BOMB_UP
+				elif roll < 0.20: return Pickup.FIRE_UP
+				elif roll < 0.28: return Pickup.SPEED_UP
+				elif roll < 0.40: return Pickup.KICK
+				elif roll < 0.52: return Pickup.REMOTE
+				elif roll < 0.68: return Pickup.SHIELD
+				else: return Pickup.SLOW_CURSE
+			_:
+				if roll < 0.22: return Pickup.BOMB_UP
+				elif roll < 0.42: return Pickup.FIRE_UP
+				elif roll < 0.58: return Pickup.SPEED_UP
+				elif roll < 0.70: return Pickup.KICK
+				elif roll < 0.80: return Pickup.REMOTE
+				elif roll < 0.90: return Pickup.SHIELD
+				else: return Pickup.SLOW_CURSE
+	return Pickup.BOMB_UP
 
 
 func pickup_at(gx: int, gy: int) -> PickupData:
@@ -1005,8 +1345,25 @@ func try_collect_pickup(pl: PlayerData) -> void:
 			pl.shield = mini(pl.shield + 1, 2)
 		Pickup.SLOW_CURSE:
 			pl.slow_timer = SLOW_DURATION
+		Pickup.BOUNCY_BOMB:
+			pl.bouncy_timer = BOUNCY_DURATION
+		Pickup.ICE_WALL:
+			pass
+		Pickup.SOUL_SWAP:
+			pass
+		Pickup.SHADOW_CLONE:
+			pass
+	pl.pickup_count += 1
+	_award_score(pl, SCORE_PICKUP)
 	events.append(GameEvent.new(Event.PICKUP_COLLECTED, {"pid": pl.pid, "kind": pd.kind}))
 	pickups.erase(pd)
+	match pd.kind:
+		Pickup.ICE_WALL:
+			_place_ice_wall(pl)
+		Pickup.SOUL_SWAP:
+			_soul_swap(pl)
+		Pickup.SHADOW_CLONE:
+			_spawn_clone(pl)
 
 
 func _destroy_pickups_at(x: int, y: int) -> void:
@@ -1028,6 +1385,10 @@ func resolve_phase() -> void:
 	elif not p1.alive and not p2.alive:
 		phase = Phase.DRAW
 	if phase != Phase.PLAYING:
+		if phase == Phase.P1_WIN:
+			_award_score(p1, SCORE_WIN)
+		elif phase == Phase.P2_WIN:
+			_award_score(p2, SCORE_WIN)
 		events.append(GameEvent.new(Event.PHASE_END, {"phase": phase}))
 
 
@@ -1050,6 +1411,11 @@ func tick_hazards(dt: float, theme: String) -> void:
 				blizzard_timer = 0.0
 				blizzard_active = true
 				blizzard_remaining = BLIZZARD_DURATION
+		_tick_avalanche(dt)
+	if theme == "grassland":
+		_tick_flood(dt)
+	if theme == "desert":
+		_tick_sandstorm(dt)
 
 
 func _trigger_eruption() -> void:
@@ -1067,6 +1433,153 @@ func _trigger_eruption() -> void:
 		_damage_at(pos.x, pos.y)
 	if count > 0:
 		events.append(GameEvent.new(Event.ERUPTION, {}))
+	_spread_lava()
+
+
+func _spread_lava() -> void:
+	var edge_cells: Array[Vector2i] = []
+	var dirs_arr: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if floor_grid[x][y] != Floor.LAVA:
+				continue
+			for d in dirs_arr:
+				var nx := x + d.x
+				var ny := y + d.y
+				if nx <= 0 or ny <= 0 or nx >= cols - 1 or ny >= rows - 1:
+					continue
+				if floor_grid[nx][ny] != Floor.NORMAL and floor_grid[nx][ny] != Floor.GRASS and floor_grid[nx][ny] != Floor.TALL_GRASS:
+					continue
+				if grid[nx][ny] != Cell.EMPTY:
+					continue
+				edge_cells.append(Vector2i(nx, ny))
+	if edge_cells.is_empty():
+		return
+	var spread_count := mini(1 + rng.randi() % 2, edge_cells.size())
+	for i in range(spread_count):
+		var idx := rng.randi() % edge_cells.size()
+		var pos := edge_cells[idx]
+		edge_cells.remove_at(idx)
+		floor_grid[pos.x][pos.y] = Floor.LAVA
+		_destroy_pickups_at(pos.x, pos.y)
+		_damage_at(pos.x, pos.y)
+	events.append(GameEvent.new(Event.LAVA_SPREAD, {}))
+
+
+func _tick_flood(dt: float) -> void:
+	flood_timer += dt
+	if flood_timer < FLOOD_INTERVAL:
+		return
+	flood_timer -= FLOOD_INTERVAL
+	var candidates: Array[Vector2i] = []
+	var dirs_arr: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	for x in range(1, cols - 1):
+		for y in range(1, rows - 1):
+			if grid[x][y] != Cell.WATER:
+				continue
+			for d in dirs_arr:
+				var nx := x + d.x
+				var ny := y + d.y
+				if nx <= 0 or ny <= 0 or nx >= cols - 1 or ny >= rows - 1:
+					continue
+				var f: int = floor_grid[nx][ny]
+				if grid[nx][ny] == Cell.EMPTY and (f == Floor.GRASS or f == Floor.TALL_GRASS or f == Floor.NORMAL):
+					candidates.append(Vector2i(nx, ny))
+	if candidates.is_empty():
+		return
+	var flood_count := mini(2 + rng.randi() % 3, candidates.size())
+	for i in range(flood_count):
+		var idx := rng.randi() % candidates.size()
+		var pos := candidates[idx]
+		candidates.remove_at(idx)
+		grid[pos.x][pos.y] = Cell.WATER
+		floor_grid[pos.x][pos.y] = Floor.NORMAL
+		_destroy_pickups_at(pos.x, pos.y)
+		_damage_at(pos.x, pos.y)
+	events.append(GameEvent.new(Event.FLOOD_ADVANCE, {}))
+
+
+func _tick_avalanche(dt: float) -> void:
+	if avalanche_warn >= 0.0:
+		avalanche_warn -= dt
+		if avalanche_warn <= 0.0:
+			_fire_avalanche()
+			avalanche_warn = -1.0
+		return
+	avalanche_timer += dt
+	if avalanche_timer < AVALANCHE_INTERVAL:
+		return
+	avalanche_timer -= AVALANCHE_INTERVAL
+	avalanche_edge = rng.randi() % 4
+	var is_horizontal := (avalanche_edge == 0 or avalanche_edge == 1)
+	var max_val: int = rows if is_horizontal else cols
+	avalanche_col = 1 + rng.randi() % maxi(max_val - 2, 1)
+	avalanche_warn = 2.0
+	events.append(GameEvent.new(Event.AVALANCHE, {"warn": true, "edge": avalanche_edge, "col": avalanche_col}))
+
+
+func _fire_avalanche() -> void:
+	var is_horizontal := (avalanche_edge == 0 or avalanche_edge == 1)
+	var length: int = cols if is_horizontal else rows
+	var width := 3
+	for w in range(-width / 2, width / 2 + 1):
+		for i in range(1, length - 1):
+			var x: int
+			var y: int
+			if is_horizontal:
+				x = i
+				y = avalanche_col + w
+			else:
+				x = avalanche_col + w
+				y = i
+			if x < 0 or y < 0 or x >= cols or y >= rows:
+				continue
+			if grid[x][y] == Cell.WALL or grid[x][y] == Cell.SHRINK_WALL:
+				continue
+			explosions.append(ExplData.new(x, y, EXPLOSION_TTL))
+			_damage_at(x, y)
+	events.append(GameEvent.new(Event.AVALANCHE, {"warn": false, "edge": avalanche_edge, "col": avalanche_col}))
+
+
+func _tick_sandstorm(dt: float) -> void:
+	if sandstorm_active:
+		sandstorm_remaining -= dt
+		sandstorm_push_cd -= dt
+		if sandstorm_push_cd <= 0.0:
+			sandstorm_push_cd += 1.0
+			_sandstorm_push()
+		if sandstorm_remaining <= 0.0:
+			sandstorm_active = false
+			events.append(GameEvent.new(Event.SANDSTORM_END, {}))
+	else:
+		sandstorm_timer += dt
+		if sandstorm_timer >= SANDSTORM_INTERVAL:
+			sandstorm_timer -= SANDSTORM_INTERVAL
+			sandstorm_active = true
+			sandstorm_remaining = SANDSTORM_DURATION
+			sandstorm_push_cd = 1.0
+			sandstorm_dir = Vector2i(1, 0) if rng.randi() % 2 == 0 else Vector2i(-1, 0)
+			events.append(GameEvent.new(Event.SANDSTORM_START, {"dir": sandstorm_dir}))
+
+
+func _sandstorm_push() -> void:
+	for i in range(pickups.size() - 1, -1, -1):
+		var pk: PickupData = pickups[i]
+		var nx := pk.gx + sandstorm_dir.x
+		var ny := pk.gy + sandstorm_dir.y
+		if nx >= 1 and nx < cols - 1 and ny >= 1 and ny < rows - 1:
+			if grid[nx][ny] == Cell.EMPTY and bomb_at(nx, ny) == null:
+				pk.gx = nx
+				pk.gy = ny
+	var all_players: Array = [p1, p2] + extra_players
+	for pl_item in all_players:
+		var pl: PlayerData = pl_item
+		if not pl.alive or pl.moving:
+			continue
+		var igx := int(roundf(pl.gx))
+		var igy := int(roundf(pl.gy))
+		if floor_at(igx, igy) == Floor.SAND:
+			try_start_move(pl, sandstorm_dir.x, sandstorm_dir.y)
 
 
 # ── 中立生物 ─────────────────────────────
@@ -1081,6 +1594,7 @@ func tick_creatures(dt: float) -> void:
 			var ex: ExplData = e
 			if ex.gx == cr.gx and ex.gy == cr.gy:
 				cr.alive = false
+				_award_score_pid(ex.owner_id, SCORE_CREATURE)
 				_maybe_drop_pickup(cr.gx, cr.gy)
 				events.append(GameEvent.new(Event.CREATURE_KILLED, {"gx": cr.gx, "gy": cr.gy}))
 				break
@@ -1100,3 +1614,239 @@ func tick_creatures(dt: float) -> void:
 				var d: Vector2i = valid_dirs[rng.randi() % valid_dirs.size()]
 				cr.gx += d.x
 				cr.gy += d.y
+
+
+# ── 趣味道具 ─────────────────────────────
+
+func _place_ice_wall(pl: PlayerData) -> void:
+	var dir := pl.last_dir
+	if dir == Vector2i.ZERO:
+		dir = Vector2i(1, 0)
+	var sx := int(roundf(pl.gx)) + dir.x
+	var sy := int(roundf(pl.gy)) + dir.y
+	var placed := 0
+	for i in range(3):
+		var wx: int = sx + dir.x * i
+		var wy: int = sy + dir.y * i
+		if wx < 1 or wx >= cols - 1 or wy < 1 or wy >= rows - 1:
+			continue
+		if grid[wx][wy] != Cell.EMPTY:
+			continue
+		if bomb_at(wx, wy) != null:
+			continue
+		var occupied := false
+		for check_pl: PlayerData in _all_players():
+			if check_pl.alive and int(roundf(check_pl.gx)) == wx and int(roundf(check_pl.gy)) == wy:
+				occupied = true
+				break
+		if occupied:
+			continue
+		grid[wx][wy] = Cell.ICE_WALL
+		ice_wall_timers[Vector2i(wx, wy)] = ICE_WALL_DURATION
+		placed += 1
+	if placed > 0:
+		events.append(GameEvent.new(Event.ICE_WALL_PLACED, {"pid": pl.pid}))
+
+
+func _soul_swap(pl: PlayerData) -> void:
+	var nearest: PlayerData = null
+	var min_dist := INF
+	for opp: PlayerData in _all_players():
+		if opp.pid == pl.pid or not opp.alive:
+			continue
+		var dx := pl.gx - opp.gx
+		var dy := pl.gy - opp.gy
+		var dist := sqrt(dx * dx + dy * dy)
+		if dist < min_dist:
+			min_dist = dist
+			nearest = opp
+	if nearest == null:
+		return
+	var tmp_gx := pl.gx
+	var tmp_gy := pl.gy
+	pl.gx = nearest.gx
+	pl.gy = nearest.gy
+	pl.target_gx = pl.gx
+	pl.target_gy = pl.gy
+	pl.moving = false
+	nearest.gx = tmp_gx
+	nearest.gy = tmp_gy
+	nearest.target_gx = nearest.gx
+	nearest.target_gy = nearest.gy
+	nearest.moving = false
+	events.append(GameEvent.new(Event.SOUL_SWAPPED, {"pid": pl.pid, "other_pid": nearest.pid}))
+
+
+func _spawn_clone(pl: PlayerData) -> void:
+	clones.append(CloneData.new(int(roundf(pl.gx)), int(roundf(pl.gy)), pl.pid))
+	pl.invisible_timer = INVISIBLE_DURATION
+	events.append(GameEvent.new(Event.CLONE_SPAWNED, {"pid": pl.pid}))
+
+
+func tick_ice_walls(dt: float) -> void:
+	var to_remove: Array[Vector2i] = []
+	for pos: Vector2i in ice_wall_timers:
+		ice_wall_timers[pos] -= dt
+		if ice_wall_timers[pos] <= 0.0:
+			to_remove.append(pos)
+	for p: Vector2i in to_remove:
+		ice_wall_timers.erase(p)
+		if p.x >= 0 and p.x < cols and p.y >= 0 and p.y < rows:
+			if grid[p.x][p.y] == Cell.ICE_WALL:
+				grid[p.x][p.y] = Cell.EMPTY
+
+
+func tick_clones(dt: float) -> void:
+	var dirs: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	for cl_item in clones:
+		var cl: CloneData = cl_item
+		if not cl.alive:
+			continue
+		for e in explosions:
+			var ex: ExplData = e
+			if ex.gx == cl.gx and ex.gy == cl.gy:
+				cl.alive = false
+				_clone_pop_slow(cl)
+				events.append(GameEvent.new(Event.CLONE_POPPED, {"gx": cl.gx, "gy": cl.gy, "pid": cl.owner_pid}))
+				break
+		if not cl.alive:
+			continue
+		cl.timer -= dt
+		if cl.timer <= 0.0:
+			cl.alive = false
+			continue
+		cl.move_timer -= dt
+		if cl.move_timer <= 0.0:
+			cl.move_timer = CLONE_MOVE_TIME + rng.randf() * 0.5
+			var valid: Array[Vector2i] = []
+			for d: Vector2i in dirs:
+				var nx: int = cl.gx + d.x
+				var ny: int = cl.gy + d.y
+				if nx >= 1 and nx < cols - 1 and ny >= 1 and ny < rows - 1:
+					if grid[nx][ny] == Cell.EMPTY and bomb_at(nx, ny) == null:
+						valid.append(d)
+			if not valid.is_empty():
+				var d: Vector2i = valid[rng.randi() % valid.size()]
+				cl.gx += d.x
+				cl.gy += d.y
+
+
+func _clone_pop_slow(cl: CloneData) -> void:
+	for t: PlayerData in _all_players():
+		if not t.alive or t.pid == cl.owner_pid:
+			continue
+		var dx := absi(int(roundf(t.gx)) - cl.gx)
+		var dy := absi(int(roundf(t.gy)) - cl.gy)
+		if dx <= CLONE_SLOW_RANGE and dy <= CLONE_SLOW_RANGE:
+			t.slow_timer = maxf(t.slow_timer, CLONE_SLOW_DUR)
+
+
+# ── 得分 / 连击 ───────────────────────────
+
+func _player_by_pid(pid: int) -> PlayerData:
+	if p1.pid == pid:
+		return p1
+	if p2.pid == pid:
+		return p2
+	for ep in extra_players:
+		var epl: PlayerData = ep
+		if epl.pid == pid:
+			return epl
+	return null
+
+
+func _award_score(pl: PlayerData, base: int) -> void:
+	var mult := 1.0 + pl.combo * 0.3
+	if match_phase == MatchPhase.CLIMAX:
+		mult *= 2.0
+	pl.score += int(base * mult)
+	pl.combo += 1
+	pl.combo_timer = COMBO_WINDOW
+	if pl.combo > pl.max_combo:
+		pl.max_combo = pl.combo
+	if pl.combo >= 2:
+		events.append(GameEvent.new(Event.COMBO_UP, {"pid": pl.pid, "combo": pl.combo}))
+
+
+func _award_score_pid(pid: int, base: int) -> void:
+	if pid < 0:
+		return
+	var pl := _player_by_pid(pid)
+	if pl != null and pl.alive:
+		_award_score(pl, base)
+
+
+func _break_combo(pl: PlayerData) -> void:
+	if pl.combo > 0:
+		events.append(GameEvent.new(Event.COMBO_BREAK, {"pid": pl.pid, "combo": pl.combo}))
+		pl.combo = 0
+		pl.combo_timer = 0.0
+
+
+func _get_fuse_for(pl: PlayerData) -> float:
+	return maxf(BOMB_FUSE - pl.pickup_count * FUSE_PENALTY, MIN_FUSE)
+
+
+func _place_super_bomb(pl: PlayerData) -> void:
+	var gx := int(roundf(pl.gx))
+	var gy := int(roundf(pl.gy))
+	if bomb_at(gx, gy) != null:
+		return
+	if _active_bombs_for(pl.pid) >= pl.max_bombs:
+		return
+	var bd := BombData.new(gx, gy, pl.pid, _get_fuse_for(pl), pl.range_i + SUPER_RANGE_BONUS)
+	bd.is_super = true
+	if pl.has_remote:
+		bd.is_remote = true
+		bd.time = 9999.0
+	bombs.append(bd)
+	pl.note_placed_bomb(gx, gy)
+	_award_score(pl, 5)
+	events.append(GameEvent.new(Event.SUPER_BOMB_PLACED, {"pid": pl.pid}))
+
+
+func _resolve_mystery(x: int, y: int) -> void:
+	var roll := rng.randf()
+	var result: String
+	if roll < 0.50:
+		result = "rare"
+		var kind: int = Pickup.BOMB_UP if rng.randf() < 0.5 else Pickup.FIRE_UP
+		pickups.append(PickupData.new(x, y, kind))
+		pickups.append(PickupData.new(x, y, kind))
+	elif roll < 0.80:
+		result = "trap"
+		explosions.append(ExplData.new(x, y, EXPLOSION_TTL))
+		_damage_at(x, y)
+	else:
+		result = "curse"
+		pickups.append(PickupData.new(x, y, Pickup.SLOW_CURSE))
+	events.append(GameEvent.new(Event.MYSTERY_RESOLVED, {"gx": x, "gy": y, "result": result}))
+
+
+# ── 比赛阶段 ──────────────────────────────
+
+func tick_match_phase(dt: float) -> void:
+	if phase != Phase.PLAYING:
+		return
+	match_timer += dt
+	var new_phase: int = match_phase
+	if match_timer >= PHASE_TENSION_END:
+		new_phase = MatchPhase.CLIMAX
+	elif match_timer >= PHASE_OPENING_END:
+		new_phase = MatchPhase.TENSION
+	if new_phase != match_phase:
+		var old_phase := match_phase
+		match_phase = new_phase
+		events.append(GameEvent.new(Event.MATCH_PHASE_CHANGE, {"phase": match_phase}))
+		for pl: PlayerData in _all_players():
+			if pl.alive:
+				_award_score(pl, SCORE_PHASE)
+		if match_phase == MatchPhase.TENSION and not shrink_enabled:
+			shrink_enabled = true
+			shrink_timer = SHRINK_START - 5.0
+
+
+func _all_players() -> Array:
+	var result: Array = [p1, p2]
+	result.append_array(extra_players)
+	return result

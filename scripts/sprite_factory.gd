@@ -117,6 +117,10 @@ func _gen_items() -> void:
 	_cache["item_remote"] = _make_item_remote()
 	_cache["item_shield"] = _make_item_shield()
 	_cache["item_curse"] = _make_item_curse()
+	_cache["item_bouncy"] = _make_item_bouncy()
+	_cache["item_ice_wall"] = _make_item_ice_wall()
+	_cache["item_soul_swap"] = _make_item_soul_swap()
+	_cache["item_clone"] = _make_item_clone()
 
 
 func _make_item_bomb_up() -> ImageTexture:
@@ -304,6 +308,115 @@ func _make_item_curse() -> ImageTexture:
 	return _rows_to_tex(rows)
 
 
+func _make_item_bouncy() -> ImageTexture:
+	var O := Color(1.0, 0.60, 0.10)
+	var OL := Color(1.0, 0.78, 0.35)
+	var OD := Color(0.80, 0.42, 0.08)
+	var S := Color(0.70, 0.70, 0.72)
+	var SD := Color(0.50, 0.50, 0.52)
+	var o := T
+	var rows: Array = [
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  O,  O,  O,  O,  O,  O,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  O,  O,  OL, OL, O,  O,  O,  O,  o,  o,  o,  o],
+		[o,  o,  o,  O,  O,  OL, OL, OL, O,  O,  O,  O,  O,  o,  o,  o],
+		[o,  o,  o,  O,  O,  OL, O,  O,  O,  O,  O,  O,  O,  o,  o,  o],
+		[o,  o,  o,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  o,  o,  o],
+		[o,  o,  o,  O,  O,  O,  O,  O,  O,  O,  OD, OD, O,  o,  o,  o],
+		[o,  o,  o,  o,  O,  O,  O,  O,  O,  OD, OD, O,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  O,  O,  O,  O,  O,  O,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  S,  S,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  S,  o,  o,  S,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  S,  S,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  S,  o,  o,  S,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  S,  S,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  SD, SD, SD, SD, SD, SD, o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+	]
+	return _rows_to_tex(rows)
+
+
+func _make_item_ice_wall() -> ImageTexture:
+	var IB := Color(0.55, 0.78, 1.0)
+	var IL := Color(0.80, 0.92, 1.0)
+	var ID := Color(0.35, 0.55, 0.80)
+	var W := Color(0.95, 0.97, 1.0)
+	var o := T
+	var rows: Array = [
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, o,  o],
+		[o,  o,  ID, IB, IB, IB, IB, IL, IL, IB, IB, IB, IB, ID, o,  o],
+		[o,  o,  ID, IB, IL, IL, IB, IB, IB, IB, IL, IL, IB, ID, o,  o],
+		[o,  o,  ID, IB, IL, W,  IL, IB, IB, IL, W,  IL, IB, ID, o,  o],
+		[o,  o,  ID, IB, IL, IL, IB, IB, IB, IB, IL, IL, IB, ID, o,  o],
+		[o,  o,  ID, IB, IB, IB, IB, IL, IL, IB, IB, IB, IB, ID, o,  o],
+		[o,  o,  ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, o,  o],
+		[o,  o,  ID, IB, IB, IB, IB, IL, IL, IB, IB, IB, IB, ID, o,  o],
+		[o,  o,  ID, IB, IL, IL, IB, IB, IB, IB, IL, IL, IB, ID, o,  o],
+		[o,  o,  ID, IB, IL, W,  IL, IB, IB, IL, W,  IL, IB, ID, o,  o],
+		[o,  o,  ID, IB, IB, IB, IB, IB, IB, IB, IB, IB, IB, ID, o,  o],
+		[o,  o,  ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, ID, o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+	]
+	return _rows_to_tex(rows)
+
+
+func _make_item_soul_swap() -> ImageTexture:
+	var P := Color(0.65, 0.30, 0.95)
+	var PL := Color(0.82, 0.55, 1.0)
+	var PD := Color(0.42, 0.18, 0.65)
+	var W := Color.WHITE
+	var o := T
+	var rows: Array = [
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  PL, PL, o,  o,  o,  o,  PD, PD, o,  o,  o,  o],
+		[o,  o,  o,  PL, PL, PL, PL, o,  o,  PD, PD, PD, PD, o,  o,  o],
+		[o,  o,  PL, PL, W,  PL, PL, P,  P,  PD, PD, W,  PD, PD, o,  o],
+		[o,  o,  PL, PL, PL, PL, P,  P,  P,  P,  PD, PD, PD, PD, o,  o],
+		[o,  o,  o,  PL, PL, P,  P,  o,  o,  P,  P,  PD, PD, o,  o,  o],
+		[o,  o,  o,  o,  P,  P,  o,  o,  o,  o,  P,  P,  o,  o,  o,  o],
+		[o,  o,  o,  P,  P,  o,  o,  o,  o,  o,  o,  P,  P,  o,  o,  o],
+		[o,  o,  P,  P,  o,  o,  o,  o,  o,  o,  o,  o,  P,  P,  o,  o],
+		[o,  o,  o,  PD, PD, o,  o,  o,  o,  o,  o,  PL, PL, o,  o,  o],
+		[o,  o,  o,  o,  PD, PD, o,  o,  o,  o,  PL, PL, o,  o,  o,  o],
+		[o,  o,  o,  PD, PD, PD, PD, P,  P,  PL, PL, PL, PL, o,  o,  o],
+		[o,  o,  PD, PD, W,  PD, P,  P,  P,  P,  PL, W,  PL, PL, o,  o],
+		[o,  o,  o,  PD, PD, PD, PD, o,  o,  PL, PL, PL, PL, o,  o,  o],
+		[o,  o,  o,  o,  PD, PD, o,  o,  o,  o,  PL, PL, o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+	]
+	return _rows_to_tex(rows)
+
+
+func _make_item_clone() -> ImageTexture:
+	var D := Color(0.20, 0.20, 0.28)
+	var DL := Color(0.35, 0.35, 0.45)
+	var DD := Color(0.10, 0.10, 0.15)
+	var G := Color(0.30, 1.0, 0.50)
+	var o := T
+	var rows: Array = [
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  D,  D,  D,  D,  D,  D,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  D,  D,  DL, DL, D,  D,  D,  D,  o,  o,  o,  o],
+		[o,  o,  o,  D,  D,  DL, DL, DL, D,  D,  D,  D,  D,  o,  o,  o],
+		[o,  o,  o,  D,  D,  G,  D,  D,  D,  G,  D,  D,  D,  o,  o,  o],
+		[o,  o,  o,  D,  D,  D,  D,  D,  D,  D,  D,  D,  D,  o,  o,  o],
+		[o,  o,  o,  D,  D,  D,  DD, DD, DD, D,  D,  D,  D,  o,  o,  o],
+		[o,  o,  o,  o,  D,  D,  D,  D,  D,  D,  D,  D,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  D,  D,  D,  D,  D,  D,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  DD, D,  D,  DD, o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  DD, DD, D,  D,  DD, DD, o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  DD, DD, o,  D,  D,  o,  DD, DD, o,  o,  o,  o],
+		[o,  o,  o,  o,  DD, o,  o,  D,  D,  o,  o,  DD, o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  DD, DD, DD, DD, o,  o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  DD, DD, o,  o,  DD, DD, o,  o,  o,  o,  o],
+		[o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o,  o],
+	]
+	return _rows_to_tex(rows)
+
+
 # ── Bomb sprite ──────────────────────────
 
 func _gen_bomb() -> void:
@@ -415,6 +528,13 @@ func _gen_terrain_tiles() -> void:
 	_cache["tile_lava"] = _make_tile_lava()
 	_cache["tile_ice"] = _make_tile_ice()
 	_cache["tile_mud"] = _make_tile_mud()
+	_cache["tile_bridge"] = _make_tile_bridge()
+	_cache["tile_timed_wall"] = _make_tile_timed_wall()
+	_cache["tile_tall_grass"] = _make_tile_tall_grass()
+	_cache["tile_gate_n"] = _make_tile_gate(0, -1)
+	_cache["tile_gate_e"] = _make_tile_gate(1, 0)
+	_cache["tile_gate_s"] = _make_tile_gate(0, 1)
+	_cache["tile_gate_w"] = _make_tile_gate(-1, 0)
 
 
 func _make_tile_water() -> ImageTexture:
@@ -558,6 +678,120 @@ func _make_tile_mud() -> ImageTexture:
 		_px(img, s[0], s[1], puddle)
 	for s in [[5, 3], [12, 7], [2, 11], [14, 2]]:
 		_px(img, s[0], s[1], wet)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_tile_bridge() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var water_d := Color(0.08, 0.38, 0.78)
+	var water_m := Color(0.22, 0.55, 0.95)
+	for y in range(SZ):
+		for x in range(SZ):
+			var g := float(y) / 15.0 * 0.4
+			img.set_pixel(x, y, water_d.lerp(water_m, clampf(g, 0.0, 1.0)))
+	var wood := Color(0.70, 0.52, 0.28)
+	var wood_d := Color(0.55, 0.38, 0.18)
+	var plank := Color(0.78, 0.60, 0.32)
+	_fill_r(img, 2, 2, 12, 12, wood)
+	for i in range(SZ):
+		_px(img, 2, i, wood_d)
+		_px(img, 13, i, wood_d)
+	for py in [4, 7, 10]:
+		for x in range(3, 13):
+			_px(img, x, py, wood_d)
+	for py in [3, 6, 9]:
+		for x in range(3, 13):
+			_px(img, x, py, plank)
+	var nail := Color(0.42, 0.42, 0.48)
+	for s in [[3, 3], [12, 3], [3, 9], [12, 9]]:
+		_px(img, s[0], s[1], nail)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_tile_timed_wall() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var base := Color(0.50, 0.50, 0.58)
+	var edge := Color(0.35, 0.35, 0.42)
+	var glow := Color(0.85, 0.72, 0.20)
+	img.fill(base)
+	for i in range(SZ):
+		_px(img, i, 0, edge)
+		_px(img, i, SZ - 1, edge)
+		_px(img, 0, i, edge)
+		_px(img, SZ - 1, i, edge)
+	for d in range(SZ):
+		_px(img, d, d, glow)
+		_px(img, SZ - 1 - d, d, glow)
+	for s in [[7, 7], [8, 7], [7, 8], [8, 8]]:
+		_px(img, s[0], s[1], Color(1.0, 0.90, 0.30))
+	return ImageTexture.create_from_image(img)
+
+
+func _make_tile_tall_grass() -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var base := Color(0.25, 0.55, 0.18)
+	var dark := Color(0.18, 0.42, 0.12)
+	var tip := Color(0.40, 0.72, 0.28)
+	var tip2 := Color(0.48, 0.80, 0.32)
+	for y in range(SZ):
+		for x in range(SZ):
+			var v := sin(float(x) * 1.0 + float(y) * 0.6) * 0.5 + 0.5
+			img.set_pixel(x, y, dark.lerp(base, v))
+	var blades: Array = [[1, 15], [3, 15], [5, 15], [7, 15], [9, 15], [11, 15], [13, 15],
+		[2, 12], [6, 11], [10, 12], [14, 11], [4, 10], [8, 9], [12, 10]]
+	for b in blades:
+		var bx: int = b[0]
+		var by: int = b[1]
+		for j in range(8):
+			var jc: Color
+			if j < 2: jc = dark
+			elif j < 4: jc = base
+			elif j < 6: jc = tip
+			else: jc = tip2
+			_px(img, bx, by - j, jc)
+		_px(img, bx + 1, by - 5, tip)
+		_px(img, bx - 1, by - 6, tip2)
+	return ImageTexture.create_from_image(img)
+
+
+func _make_tile_gate(dx: int, dy: int) -> ImageTexture:
+	var img := Image.create(SZ, SZ, false, Image.FORMAT_RGBA8)
+	var bg := Color(0.32, 0.32, 0.38)
+	var frame := Color(0.62, 0.52, 0.28)
+	var arrow := Color(0.95, 0.82, 0.18)
+	img.fill(bg)
+	for i in range(SZ):
+		_px(img, i, 0, frame)
+		_px(img, i, SZ - 1, frame)
+		_px(img, 0, i, frame)
+		_px(img, SZ - 1, i, frame)
+	_px(img, 1, 0, frame); _px(img, 0, 1, frame)
+	var cx := SZ / 2
+	var cy := SZ / 2
+	if dx == 1:
+		for i in range(-3, 4):
+			_px(img, cx, cy + i, arrow)
+		for i in range(4):
+			_px(img, cx + 1 + i, cy - i, arrow)
+			_px(img, cx + 1 + i, cy + i, arrow)
+	elif dx == -1:
+		for i in range(-3, 4):
+			_px(img, cx, cy + i, arrow)
+		for i in range(4):
+			_px(img, cx - 1 - i, cy - i, arrow)
+			_px(img, cx - 1 - i, cy + i, arrow)
+	elif dy == -1:
+		for i in range(-3, 4):
+			_px(img, cx + i, cy, arrow)
+		for i in range(4):
+			_px(img, cx - i, cy - 1 - i, arrow)
+			_px(img, cx + i, cy - 1 - i, arrow)
+	elif dy == 1:
+		for i in range(-3, 4):
+			_px(img, cx + i, cy, arrow)
+		for i in range(4):
+			_px(img, cx - i, cy + 1 + i, arrow)
+			_px(img, cx + i, cy + 1 + i, arrow)
 	return ImageTexture.create_from_image(img)
 
 
